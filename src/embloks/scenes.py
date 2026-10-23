@@ -1,4 +1,4 @@
-"""Built-in example scenes, loaded with F1-F4.
+"""Built-in example scenes, loaded with F1-F5.
 
 Each scene is built from code: it resets physics settings and display layers to
 their defaults, paints materials and test charges, then sets the layers that
@@ -67,15 +67,38 @@ def series_batteries(world: World) -> None:
                     Material.BATTERY, emf=2, orientation=Orientation.RIGHT)
 
 
-def open_circuit(world: World) -> None:
-    """A battery with two wires whose ends don't meet: they charge up like a capacitor."""
-    world.paint(*line(20, 20, 18, 18), Material.BATTERY, emf=8, orientation=Orientation.RIGHT)
-    world.paint(*line(8, 19, 18, 18), Material.CONDUCTOR, resistance=0.5)
-    world.paint(*line(21, 32, 18, 18), Material.CONDUCTOR, resistance=0.5)
-    world.paint(*line(8, 8, 8, 17), Material.CONDUCTOR, resistance=0.5)
-    world.paint(*line(32, 32, 8, 17), Material.CONDUCTOR, resistance=0.5)
-    world.paint(*line(8, 17, 8, 8), Material.CONDUCTOR, resistance=0.5)
-    world.paint(*line(23, 32, 8, 8), Material.CONDUCTOR, resistance=0.5)
+def capacitor(world: World) -> None:
+    """Two large parallel plates, close together, each wired to one battery terminal.
+
+    The gap (5 cells) is several smoothing lengths wide so the uniform field between
+    the plates is resolved; low-resistance wires keep the charging (RC) time short.
+    """
+    wire = 0.1
+    plate_rows = (8, 23)
+    world.paint(*line(16, 16, *plate_rows), Material.CONDUCTOR, resistance=wire)
+    world.paint(*line(22, 22, *plate_rows), Material.CONDUCTOR, resistance=wire)
+    world.paint(*line(19, 19, 28, 28), Material.BATTERY, emf=8, orientation=Orientation.RIGHT)
+    for cells in (
+        line(8, 18, 28, 28), line(8, 8, 15, 27), line(9, 15, 15, 15),     # - side, to left plate
+        line(20, 30, 28, 28), line(30, 30, 15, 27), line(23, 29, 15, 15),  # + side, to right plate
+    ):
+        world.paint(*cells, Material.CONDUCTOR, resistance=wire)
+
+
+def parallel_paths(world: World) -> None:
+    """Three resistors between two bus bars: two identical, one twice as wide.
+
+    Branches are 2 and 4 cells wide rather than 1 and 2: one-cell wires resolve the
+    field worst at their junctions, which would blur the 2x comparison.
+    """
+    bus = 0.05
+    for cols, rows in (((4, 7), (9, 30)), ((33, 36), (9, 30)), ((4, 36), (28, 30))):
+        world.paint(*np.meshgrid(np.arange(*cols), np.arange(*rows), indexing="ij"),
+                    Material.CONDUCTOR, resistance=bus)
+    world.paint(*line(19, 19, 28, 29), Material.BATTERY, emf=6, orientation=Orientation.LEFT)
+    for rows in ((10, 11), (16, 17), (21, 24)):
+        world.paint(*line(7, 32, *rows), Material.CONDUCTOR, resistance=bus)
+        world.paint(*line(12, 27, *rows), Material.CONDUCTOR, resistance=2)
 
 
 SCENES = [
@@ -98,10 +121,17 @@ SCENES = [
         {"S": {"visible": False}},
     ),
     Scene(
-        "Open circuit",
-        "charge piles up at the wire ends until they are one EMF apart",
-        40, open_circuit,
+        "Capacitor",
+        "the plates charge until they are one EMF apart; between them E is nearly uniform",
+        40, capacitor,
         {"B": {"visible": False}},
+    ),
+    Scene(
+        "Parallel paths",
+        "hover the resistors and read 'Wire I': the two thin ones carry equal currents, "
+        "the double-wide one twice as much",
+        40, parallel_paths,
+        {"S": {"visible": False}},
     ),
 ]
 

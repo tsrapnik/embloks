@@ -38,7 +38,7 @@ video driver). Configuration is the `[tool.pytest.ini_options]` section of `pypr
 | `C`                 | Clear the canvas                                              |
 | Ctrl + `0`-`9`      | Save the scene to a slot                                      |
 | Shift + `0`-`9`     | Load the scene from a slot                                    |
-| `F1` - `F4`         | Load an example scene (see *Example scenes*)                  |
+| `F1` - `F5`         | Load an example scene (see *Example scenes*)                  |
 | `P`                 | Hide / show particles (ions and electrons)                    |
 | `E`                 | Hide / show electric field arrows                             |
 | `B`                 | Hide / show magnetic field colours                            |
@@ -194,7 +194,7 @@ dissipates (about 1/6 in a quick check).
 
 ### Example scenes
 
-`F1`-`F4` load ready-made scenes. Each starts from rest, so you watch it settle. Each resets the
+`F1`-`F5` load ready-made scenes. Each starts from rest, so you watch it settle. Each resets the
 physics settings and display layers to their defaults, then shows the layers that suit it.
 
 - **F1 Battery and resistor**: the textbook circuit. A rectangular loop of low-resistance wire,
@@ -206,8 +206,16 @@ physics settings and display layers to their defaults, then shows the layers tha
   angles.
 - **F3 Batteries in series**: two identical loops, one driven by a single cell of EMF 2, the other
   by three in series. Hover over their wires: the right loop carries three times the current.
-- **F4 Open circuit**: a battery whose two wires don't meet. Charge piles up at the wire ends until
-  they are one EMF apart. The gap at the top acts like a capacitor, with the field across it.
+- **F4 Capacitor**: two large parallel plates, close together, each wired to one battery
+  terminal. Watch them charge: electrons gather on the `-` plate's inner face and leave the `+`
+  plate, until the plates are one EMF apart (about 60 time units: an RC charging curve through
+  the wires). Between the plates the field is nearly uniform; at the plate ends it fringes out.
+- **F5 Parallel paths**: a battery drives two thick bus bars with three resistors between them,
+  all of the same length and material. The two identical ones carry equal currents; the one
+  twice as wide has half the resistance and carries twice the current. Hover a resistor and
+  read **Wire I** in the info panel (the current per cell, *I*, is the same in all three: the
+  wide one just has twice as many cells side by side). The resistors are 2 and 4 cells wide
+  rather than 1 and 2, because one-cell wires are the least accurate (see *Batteries*).
 
 Save your own variations to a slot with Ctrl + digit.
 
@@ -311,7 +319,9 @@ the cell under the mouse it shows:
   its centre,
 - for conductors, the **current** through it: conventional current (the direction positive
   charge would flow, opposite to the electrons), averaged over 2 time units
-  (`current_smoothing_time`), like an ammeter's response time.
+  (`current_smoothing_time`), like an ammeter's response time. **I** is the current through
+  that one cell; **Wire I** is the total through the whole wire at that point, like a clamp
+  meter: it adds up the cells across the wire, perpendicular to the flow.
 
 All numbers in the panel (V, E, B, S, I, the battery's terminal voltage and current, and the
 mean |E| in wires) are additionally low-pass filtered over about one *real* second

@@ -45,7 +45,7 @@ KEY_HELP = [
     ("+  -", "grid density (clears)"),
     ("C", "clear all"),
     ("Ctrl / Shift + 0-9", "save to / load from slot"),
-    ("F1 - F4", "example scenes: battery + resistor / screening / series / open circuit"),
+    ("F1 - F5", "example scenes: battery + resistor / screening / series / capacitor / parallel"),
     ("H", "panel: full / status only / hidden"),
 ]
 PAINT_BUTTON = 1
@@ -438,8 +438,29 @@ class App:
         ]
         if kind == Material.CONDUCTOR:
             ix, iy = smooth("I", self.current[col, row])
-            rows.append(("I", f"({ix:+.3g}, {iy:+.3g})   |I| {np.hypot(ix, iy):.3g}"))
+            rows.append(("I", f"({ix:+.3g}, {iy:+.3g})   |I| {np.hypot(ix, iy):.3g}  (this cell)"))
+            total, width = self.wire_current(col, row)
+            total = smooth("wire I", total)
+            rows.append(("Wire I", f"{abs(total):.3g}  (across {plural(width, 'cell')} of wire)"))
         return rows
+
+    def wire_current(self, col: int, row: int) -> tuple[float, int]:
+        """Total current through the wire's cross-section at a cell, like a clamp meter.
+
+        Takes the direction the current mostly flows in at this cell, then sums that
+        component over the unbroken run of conductor cells across it.
+        """
+        m = self.world.materials
+        along = 0 if abs(self.current[col, row, 0]) >= abs(self.current[col, row, 1]) else 1
+        across = (0, 1) if along == 0 else (1, 0)
+        cells = [(col, row)]
+        for sign in (1, -1):
+            c, r = col + sign * across[0], row + sign * across[1]
+            while 0 <= c < m.cols and 0 <= r < m.rows and m.conductive[c, r]:
+                cells.append((c, r))
+                c, r = c + sign * across[0], r + sign * across[1]
+        cols, rows = np.array(cells).T
+        return float(self.current[cols, rows, along].sum()), len(cells)
 
     def describe_stack(self, cell: tuple[int, int], potential: np.ndarray) -> str:
         stack = next(st for st in self.world.stacks if cell in st.cells)

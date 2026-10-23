@@ -242,3 +242,17 @@ def test_info_panel_numbers_are_filtered_while_hovering(app):
     app.render()
     shown = float(app.cell_readout._values["V"])
     assert abs(shown - before) < abs(exact - before)
+
+
+def test_wire_current_sums_across_the_wire(app):
+    rows = (4, 5, 6)
+    for row in rows:
+        for col in range(2, 10):
+            click(app, (col, row), 1)
+    app.current[:] = 0
+    app.current[2:10, 4:7, 0] = 0.25  # 0.25 through each of the 3 cells across.
+    total, width = app.wire_current(5, 5)
+    assert (total, width) == (pytest.approx(0.75), 3)
+    app.current[2:10, 4:7] = [0, 0.1]  # Flowing along y instead: cross-section is a row.
+    total, width = app.wire_current(5, 5)
+    assert (total, width) == (pytest.approx(0.8), 8)

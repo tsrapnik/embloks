@@ -99,3 +99,36 @@ def test_magnetic_field_next_to_the_battery_is_steady(app):
     samples = np.array(samples)
     flicker = samples.std(axis=0).mean() / np.abs(samples.mean(axis=0)).mean()
     assert flicker < 0.3
+
+
+def test_capacitor_plates_reach_the_emf_with_a_uniform_field_between(app):
+    app.load_scene(3)
+    app.world.rng = np.random.default_rng(0)
+    run(app, 60)
+    potential = app.electric.potential_grid(app.world)
+    left_plate, right_plate = potential[16, 10:22].mean(), potential[22, 10:22].mean()
+    [stack] = app.world.stacks
+    assert right_plate - left_plate == pytest.approx(abs(stack.emf), rel=0.1)
+    # Interior of the gap: away from the plates (charges are smeared ~1 cell) and edges.
+    gap = app.electric.grid(app.world)[18:21, 12:20]
+    assert (gap[..., 0] < 0).all()  # From the + plate (right) to the - plate (left).
+    strength = np.hypot(gap[..., 0], gap[..., 1])
+    assert strength.std() / strength.mean() < 0.1  # Nearly uniform.
+
+
+def test_parallel_paths_split_the_current_by_resistance(app):
+    app.load_scene(4)
+    app.world.rng = np.random.default_rng(0)
+    run(app, 50)
+    # Average over every cross-section along each resistor (same current in steady
+    # state) and over time: few discrete electrons pass any one line (shot noise).
+    thin_a, thin_b, wide = [], [], []
+    for _ in range(int(40 / app.settings.dt)):
+        app.step(app.settings.dt)
+        for col in range(13, 27):
+            thin_a.append(app.wire_current(col, 10)[0])
+            thin_b.append(app.wire_current(col, 17)[0])
+            wide.append(app.wire_current(col, 22)[0])
+    thin_a, thin_b, wide = (abs(np.mean(x)) for x in (thin_a, thin_b, wide))
+    assert thin_a == pytest.approx(thin_b, rel=0.15)
+    assert wide / ((thin_a + thin_b) / 2) == pytest.approx(2, rel=0.2)
