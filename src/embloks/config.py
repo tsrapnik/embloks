@@ -102,6 +102,12 @@ class Settings:
     # On fine grids only every n-th cell gets an arrow, keeping arrows this far apart.
     min_arrow_spacing_px: int = 16
 
+    # Poynting arrows, scaled like the E arrows between these bounds of |S|.
+    s_field_min: float = 1e-5
+    s_field_max: float = 0.1
+    s_arrow_color: tuple[int, int, int] = (90, 235, 140)
+    s_arrow_dim_color: tuple[int, int, int] = (30, 80, 50)
+
     # B heatmap: opacity grows with log10(c^2 |B|) between these bounds. Scaling by c^2
     # (i.e. showing the current-like part of B) keeps the colours independent of c.
     b_field_min: float = 1e-3
@@ -122,3 +128,9 @@ class Settings:
     hud_label_color: tuple[int, int, int] = (130, 190, 255)
     hud_rule_color: tuple[int, int, int] = (70, 70, 90)
     hud_background: tuple[int, int, int, int] = (0, 0, 0, 175)
+    button_color: tuple[int, int, int] = (40, 40, 55)
+    button_active_color: tuple[int, int, int] = (45, 90, 140)
+
+    # Displayed E (and S) are averaged over roughly this much simulated time, so single
+    # electrons jittering don't make the arrows flicker. 0 shows the instantaneous field.
+    display_smoothing_time: float = 0.5

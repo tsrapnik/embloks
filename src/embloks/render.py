@@ -3,6 +3,7 @@ import pygame
 
 from embloks.config import Settings
 from embloks.grid import Grid
+from embloks.layers import Layer
 from embloks.materials import Material, Materials, Orientation
 from embloks.particles import Particles
 
@@ -195,18 +196,26 @@ def draw_field_arrows(
     cells: tuple[np.ndarray, np.ndarray],
     field: np.ndarray,
     settings: Settings,
+    layer: Layer,
+    bounds: tuple[float, float],
+    colors: tuple[tuple[int, int, int], tuple[int, int, int]],
 ) -> None:
-    """Arrows centred on cells, with length and brightness growing with log10|field|."""
+    """Arrows centred on cells; length and brightness follow the layer's intensity.
+
+    `bounds` are the magnitudes for the shortest and longest arrow (before the
+    layer's gain); `colors` the (dim, bright) colours at those ends.
+    """
     cols, rows = cells
     magnitude = np.hypot(field[:, 0], field[:, 1])
-    lo, hi = settings.e_field_min, settings.e_field_max
-    with np.errstate(divide="ignore"):
-        t = np.clip(np.log(magnitude / lo) / np.log(hi / lo), 0, 1)
+    t = layer.intensity(magnitude, *bounds)
     spacing = grid.cell_px * arrow_stride(grid, settings)
     centre_x = grid.origin_x + (cols + 0.5) * grid.cell_px
     centre_y = grid.origin_y + (rows + 0.5) * grid.cell_px
-    dim = np.array(settings.e_arrow_dim_color)
-    bright = np.array(settings.e_arrow_color)
+    dim, bright = np.array(colors[0]), np.array(colors[1])
+    # Arrows go on a colour-keyed overlay that is then blended at the layer's opacity.
+    overlay = pygame.Surface(surface.get_size())
+    overlay.set_colorkey((0, 0, 0))
+    overlay.set_alpha(round(255 * layer.opacity))
     for i in np.flatnonzero(t > 0):
         length = spacing * 0.9 * t[i]
         if length < 2:
@@ -216,13 +225,14 @@ def draw_field_arrows(
         tail = (cx - ux * length / 2, cy - uy * length / 2)
         tip = (cx + ux * length / 2, cy + uy * length / 2)
         color = dim + (bright - dim) * t[i]
-        pygame.draw.line(surface, color, tail, tip)
+        pygame.draw.line(overlay, color, tail, tip)
         head = length * 0.3
         # Two barbs at +-30 degrees from the reversed direction.
         for sx, sy in ((0.866, 0.5), (0.866, -0.5)):
             bx = -(ux * sx - uy * sy) * head
             by = -(uy * sx + ux * sy) * head
-            pygame.draw.line(surface, color, tip, (tip[0] + bx, tip[1] + by))
+            pygame.draw.line(overlay, color, tip, (tip[0] + bx, tip[1] + by))
+    surface.blit(overlay, (0, 0))
 
 
 def draw_fixed_charges(
@@ -241,17 +251,15 @@ def draw_fixed_charges(
 
 
 def draw_magnetic_field(
-    surface: pygame.Surface, grid: Grid, bz: np.ndarray, settings: Settings
+    surface: pygame.Surface, grid: Grid, bz: np.ndarray, settings: Settings, layer: Layer
 ) -> None:
     """Translucent heatmap of B_z: red out of the screen, blue into it.
 
-    Opacity grows with log10(c^2 |B_z|), so the colours mean the same for any c.
-    Positive B_z points into the screen (screen y points down).
+    Colour strength follows the layer's intensity of c^2 |B_z|, so the colours
+    mean the same for any c. Positive B_z points into the screen (y points down).
     """
     s = settings
-    magnitude = np.abs(bz) * s.speed_of_light**2
-    with np.errstate(divide="ignore"):
-        t = np.clip(np.log(magnitude / s.b_field_min) / np.log(s.b_field_max / s.b_field_min), 0, 1)
+    t = layer.intensity(np.abs(bz) * s.speed_of_light**2, s.b_field_min, s.b_field_max)
     if not t.any():
         return
     small = pygame.Surface(bz.shape, pygame.SRCALPHA)
@@ -259,7 +267,7 @@ def draw_magnetic_field(
     rgb[:] = np.where((bz > 0)[..., None], s.b_in_color, s.b_out_color)
     del rgb
     alpha = pygame.surfarray.pixels_alpha(small)
-    alpha[:] = (t * s.b_max_alpha).astype(np.uint8)
+    alpha[:] = (t * s.b_max_alpha * layer.opacity).astype(np.uint8)
     del alpha  # Release the surface locks before scaling.
     # Smooth scaling blends neighbouring cells into a continuous field.
     layer = pygame.transform.smoothscale(small, (grid.pixel_width, grid.pixel_height))

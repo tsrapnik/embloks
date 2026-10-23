@@ -39,6 +39,8 @@ video driver). Configuration is the `[tool.pytest.ini_options]` section of `pypr
 | `P`                 | Hide / show particles (ions and electrons)                    |
 | `E`                 | Hide / show electric field arrows                             |
 | `B`                 | Hide / show magnetic field colours                            |
+| `S`                 | Hide / show energy flow (Poynting) arrows (off at start)      |
+| `L`                 | Hide / show the layers panel (top right, clickable)           |
 | `H`                 | Info panel: full / status only / hidden                       |
 | `+` / `-`           | Finer / coarser grid (resets the scene)                       |
 | Space               | Pause / resume physics                                        |
@@ -110,7 +112,8 @@ feel there. It is the sum of the fields of all charges (ions, electrons and test
 Coulomb's law. Both arrow length and brightness grow with the *logarithm* of the field strength
 (between `e_field_min` and `e_field_max` in [config.py](src/embloks/config.py)), because fields
 near a charge are many times stronger than fields far away. On fine grids only every n-th cell
-gets an arrow, so arrows don't overlap. The info panel shows the exact E value under the mouse.
+gets an arrow, so arrows don't overlap. The info panel shows the E value under the mouse. Scale,
+opacity and linear/log display can be changed in the layers panel (see *Display layers*).
 
 Each charge is slightly "smeared" (a softening length in config.py), so fields never become
 infinite at a charge. Ions are smeared over about a cell: together, neighbouring ions then act
@@ -166,6 +169,47 @@ the mouse. `B` toggles the colours.
 Limitation: fields here follow the charges instantly. A *changing* magnetic field does not
 create an electric field, so there is no induction (no coils, transformers or EM waves).
 
+### Energy flow (Poynting vector)
+
+Green arrows (toggle with `S`, off at start) show the **Poynting vector** `S = E × B / μ0`: which
+way electromagnetic energy flows, and how much. Since E lies in the plane and B points out of it,
+S lies in the plane again. Arrows are log-scaled like the E arrows. Show S with E hidden (`E`), as
+both sit on the same cells.
+
+The surprising textbook result shows up clearly here. Build a loop of low-resistance wire with
+a short high-resistance section (a resistor) and a battery. The energy does **not** travel inside
+the wires: it leaves the battery, flows through the empty space beside the wires (inside and
+outside the loop), and pours into the resistor sideways, where it turns into heat (the drag on
+the electrons). The wires only guide it.
+
+Caveat: charges here are 3D point charges confined to a plane, so in a real 3D world part of the
+energy also flows above and below the screen. The arrows show the direction and relative strength
+correctly, but adding up S around a resistor *in the plane* gives only part of the I²R power it
+dissipates (about 1/6 in a quick check).
+
+### Display layers
+
+What you see is built from four layers: **E field** arrows, **B field** colours,
+**S energy flow** arrows and **particles** (ions and electrons). The **layers panel** in the
+top-right corner (`L` hides it) has a row per layer; click its buttons to change:
+
+- **show**: on / off (same as the `E`, `B`, `S`, `P` keys),
+- **scale**: −/+ halves or doubles the gain (×1/16 to ×16). Fields are multiplied by it
+  before drawing, so weak fields become visible (or strong ones stop saturating),
+- **opacity**: −/+ steps through 10% to 100%, e.g. keep E faintly in the background while
+  watching S,
+- **mode**: **log** (default) or **linear**. Log scale shows weak and strong fields side by
+  side; linear scale makes arrow length (or colour strength) proportional to the field, which
+  is honest about *how much* stronger one place is than another. Use scale to fit it.
+
+Particles can only be shown or hidden. Clicks on the panel never paint.
+
+The E arrows (and S, which uses E) are averaged over about half a time unit of simulated time
+(`display_smoothing_time`), so they don't flicker as single electrons jitter. The average
+holds still while paused, and restarts from the exact field whenever you paint, so edits show
+up immediately. B is drawn from the averaged current for the same reason. The physics always
+uses the exact, instantaneous fields.
+
 ### Simulation speed
 
 Physics advances in fixed ticks of `dt` = 1/30 time unit. Electrons respond within a few time
@@ -216,7 +260,8 @@ and the **keys**. `H` cycles between showing all of it, only status and cell, an
 the cell under the mouse it shows:
 
 - the material, island number and electron count (or the battery's stack details),
-- the electric potential **V**, field **E** and magnetic field **B** at its centre,
+- the electric potential **V**, field **E**, magnetic field **B** and energy flow **S** at
+  its centre,
 - for conductors, the **current** through it: conventional current (the direction positive
   charge would flow, opposite to the electrons), averaged over about a second
   (`current_smoothing_time`).

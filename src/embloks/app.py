@@ -3,8 +3,9 @@ import pygame
 
 from embloks import battery, physics, render
 from embloks.config import Settings
-from embloks.fields import ElectricField, MagneticField
+from embloks.fields import ElectricField, MagneticField, poynting
 from embloks.grid import Grid
+from embloks.layers import Layer, LayerPanel
 from embloks.materials import Material, Orientation
 from embloks.ui import Brush, Tool, line_cells
 from embloks.world import World
@@ -16,6 +17,8 @@ TOOL_KEYS = {
     pygame.K_2: Tool.BATTERY,
     pygame.K_3: Tool.CHARGE,
 }
+# Keys that show/hide a display layer, by layer id.
+LAYER_KEYS = {pygame.K_e: "E", pygame.K_b: "B", pygame.K_s: "S", pygame.K_p: "P"}
 SLOWER_KEYS = {pygame.K_COMMA, pygame.K_LESS}
 FASTER_KEYS = {pygame.K_PERIOD, pygame.K_GREATER}
 # H cycles the info panel through these.
@@ -27,7 +30,8 @@ KEY_HELP = [
     ("Up  Down", "tool value: resistance / EMF / charge"),
     ("R", "rotate battery"),
     ("[  ]  wheel", "brush size"),
-    ("E  B  P", "show E arrows / B colours / particles"),
+    ("E  B  S  P", "show E arrows / B colours / S arrows / particles"),
+    ("L", "layers panel (top right): show, scale, opacity, log/linear"),
     ("Space", "pause"),
     ("<  >", "slower / faster simulation (the , and . keys)"),
     ("+  -", "grid density (clears)"),
@@ -51,9 +55,14 @@ class App:
         self.paused = False
         self.hud_mode = HUD_MODES[0]
         self.sim_speed = self.settings.default_sim_speed
-        self.show_particles = True
-        self.show_e_field = True
-        self.show_b_field = True
+        self.layers = {
+            "E": Layer("E field"),
+            "B": Layer("B field"),
+            # Off by default: Poynting arrows sit on the same cells as the E arrows.
+            "S": Layer("S energy flow", visible=False),
+            "P": Layer("Particles", adjustable=False),
+        }
+        self.layer_panel = LayerPanel(list(self.layers.values()), self.font, self.settings)
         self.electric = ElectricField(self.settings)
         self.magnetic = MagneticField(self.settings)
         self.brush = Brush(self.settings)
@@ -77,6 +86,11 @@ class App:
         self._stroke_cell: tuple[int, int] | None = None
         # Whether the current erase stroke removes test charges instead of materials.
         self._erase_charges = False
+        # Time-averaged E for display, the simulation time it was last updated, and
+        # what the static charges looked like then (painting resets the average).
+        self._e_display: np.ndarray | None = None
+        self._e_display_time = 0.0
+        self._e_display_key = None
 
     def change_density(self, factor: float) -> None:
         s = self.settings
@@ -108,14 +122,22 @@ class App:
             elif event.type == pygame.KEYDOWN:
                 self.handle_key(event.key)
             elif event.type == pygame.MOUSEBUTTONDOWN and event.button in (PAINT_BUTTON, ERASE_BUTTON):
-                self.start_stroke(event.button, self.grid.cell_at(*event.pos))
+                if event.button == PAINT_BUTTON and self.layer_panel.handle_click(event.pos):
+                    continue
+                if not self.over_panel(event.pos):
+                    self.start_stroke(event.button, self.grid.cell_at(*event.pos))
             elif event.type == pygame.MOUSEMOTION and self._stroke_button is not None:
                 self.stroke_to(self.grid.cell_at(*event.pos))
             elif event.type == pygame.MOUSEBUTTONUP and event.button == self._stroke_button:
                 self._stroke_button = None
             elif event.type == pygame.MOUSEWHEEL:
                 self.brush.resize(event.y)
-        self.hovered_cell = self.grid.cell_at(*pygame.mouse.get_pos())
+        mouse = pygame.mouse.get_pos()
+        self.hovered_cell = None if self.over_panel(mouse) else self.grid.cell_at(*mouse)
+
+    def over_panel(self, pos: tuple[int, int]) -> bool:
+        rect = self.layer_panel.rect
+        return self.layer_panel.visible and rect is not None and rect.collidepoint(pos)
 
     def handle_key(self, key: int) -> None:
         brush = self.brush
@@ -141,12 +163,11 @@ class App:
             brush.adjust_value(-1)
         elif key == pygame.K_c:
             self.world.clear()
-        elif key == pygame.K_p:
-            self.show_particles = not self.show_particles
-        elif key == pygame.K_e:
-            self.show_e_field = not self.show_e_field
-        elif key == pygame.K_b:
-            self.show_b_field = not self.show_b_field
+        elif key in LAYER_KEYS:
+            layer = self.layers[LAYER_KEYS[key]]
+            layer.visible = not layer.visible
+        elif key == pygame.K_l:
+            self.layer_panel.visible = not self.layer_panel.visible
         elif key in SLOWER_KEYS | FASTER_KEYS:
             self.change_speed(1 if key in FASTER_KEYS else -1)
         elif key == pygame.K_h:
@@ -214,22 +235,51 @@ class App:
         self.sim_time += dt
         self.tick_count += 1
 
+    def display_e_field(self) -> np.ndarray:
+        """E on the grid, averaged over display_smoothing_time of simulated time.
+
+        The average advances with simulated time, so it holds still while paused.
+        It restarts from the instantaneous field whenever charges are painted,
+        so edits show up immediately even while paused.
+        """
+        e = self.electric.grid(self.world)
+        w = self.world
+        key = (id(w), w.materials.version, w.fixed_version)
+        tau = self.settings.display_smoothing_time
+        if self._e_display is None or key != self._e_display_key or tau <= 0:
+            self._e_display = e
+        else:
+            alpha = 1 - np.exp(-(self.sim_time - self._e_display_time) / tau)
+            self._e_display = self._e_display + alpha * (e - self._e_display)
+        self._e_display_key = key
+        self._e_display_time = self.sim_time
+        return self._e_display
+
     def render(self) -> None:
-        s = self.settings
+        s, layers = self.settings, self.layers
         self.screen.fill(s.background_color)
         self.material_layer.draw(
-            self.screen, self.grid, self.world.materials, s, show_ions=self.show_particles
+            self.screen, self.grid, self.world.materials, s, show_ions=layers["P"].visible
         )
         # Display B from the smoothed current: instantaneous electron jitter would flicker.
         b_grid = self.magnetic.grid(self.world, self.current + battery.current_grid(self.world))
-        if self.show_b_field:
-            render.draw_magnetic_field(self.screen, self.grid, b_grid, s)
+        if layers["B"].visible:
+            render.draw_magnetic_field(self.screen, self.grid, b_grid, s, layers["B"])
         render.draw_grid_lines(self.screen, self.grid, s)
-        e_grid = self.electric.grid(self.world)
-        if self.show_e_field:
-            cells = render.arrow_sample_cells(self.grid, s)
-            render.draw_field_arrows(self.screen, self.grid, cells, e_grid[cells], s)
-        if self.show_particles:
+        e_grid = self.display_e_field()
+        s_grid = poynting(e_grid, b_grid, s)
+        cells = render.arrow_sample_cells(self.grid, s)
+        if layers["E"].visible:
+            render.draw_field_arrows(
+                self.screen, self.grid, cells, e_grid[cells], s, layers["E"],
+                (s.e_field_min, s.e_field_max), (s.e_arrow_dim_color, s.e_arrow_color),
+            )
+        if layers["S"].visible:
+            render.draw_field_arrows(
+                self.screen, self.grid, cells, s_grid[cells], s, layers["S"],
+                (s.s_field_min, s.s_field_max), (s.s_arrow_dim_color, s.s_arrow_color),
+            )
+        if layers["P"].visible:
             render.draw_electrons(self.screen, self.grid, self.world.particles, s)
         render.draw_fixed_charges(
             self.screen, self.grid, self.world.fixed_pos, self.world.fixed_charge, s
@@ -238,15 +288,18 @@ class App:
             cells = self.brush.footprint(self.hovered_cell, self.grid)
             render.draw_brush_outline(self.screen, self.grid, cells, s)
         if self.hud_mode != "hidden":
-            render.draw_hud(self.screen, self.font, self.hud_sections(e_grid, b_grid), s)
+            render.draw_hud(self.screen, self.font, self.hud_sections(e_grid, b_grid, s_grid), s)
+        self.layer_panel.draw(self.screen)
         pygame.display.flip()
         self.update_caption()
 
-    def hud_sections(self, e_grid: np.ndarray, b_grid: np.ndarray) -> list[list[tuple[str, str]]]:
+    def hud_sections(
+        self, e_grid: np.ndarray, b_grid: np.ndarray, s_grid: np.ndarray
+    ) -> list[list[tuple[str, str]]]:
         """Info panel content: sections of (label, value) rows."""
         sections = [self.status_rows(e_grid)]
         if self.hovered_cell is not None:
-            sections.append(self.cell_rows(*self.hovered_cell, e_grid, b_grid))
+            sections.append(self.cell_rows(*self.hovered_cell, e_grid, b_grid, s_grid))
         if self.hud_mode == "full":
             sections.append(KEY_HELP)
         return sections
@@ -278,7 +331,7 @@ class App:
         return rows
 
     def cell_rows(
-        self, col: int, row: int, e_grid: np.ndarray, b_grid: np.ndarray
+        self, col: int, row: int, e_grid: np.ndarray, b_grid: np.ndarray, s_grid: np.ndarray
     ) -> list[tuple[str, str]]:
         w, m = self.world, self.world.materials
         potential = self.electric.potential_grid(w)
@@ -301,6 +354,7 @@ class App:
             what += f"  ·  test charge {w.fixed_charge[here][0]:+g} e"
 
         ex, ey = e_grid[col, row]
+        sx, sy = s_grid[col, row]
         rows = [(f"Cell {col},{row}", what)]
         if kind == Material.BATTERY:
             rows.append(("Stack", self.describe_stack((col, row), potential)))
@@ -308,6 +362,7 @@ class App:
             ("V", f"{potential[col, row]:+.3g}"),
             ("E", f"({ex:+.3g}, {ey:+.3g})   |E| {np.hypot(ex, ey):.3g}"),
             ("B", describe_b(b_grid[col, row])),
+            ("S", f"({sx:+.3g}, {sy:+.3g})   |S| {np.hypot(sx, sy):.3g}"),
         ]
         if kind == Material.CONDUCTOR:
             ix, iy = self.current[col, row]

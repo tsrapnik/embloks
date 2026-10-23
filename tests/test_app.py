@@ -1,3 +1,4 @@
+import numpy as np
 import pygame
 import pytest
 
@@ -166,3 +167,43 @@ def test_h_cycles_info_panel(app):
         seen.append(app.hud_mode)
         app.render()
     assert seen == ["full", "status", "hidden", "full"]
+
+
+def test_s_toggles_poynting_arrows_and_render_shows_them(app):
+    assert not app.layers["S"].visible
+    press(app, pygame.K_s)
+    assert app.layers["S"].visible
+    click(app, (3, 3), 1)
+    app.hovered_cell = (3, 3)
+    app.render()
+
+
+def test_clicking_the_layer_panel_does_not_paint(app):
+    app.render()
+    rect = app.layer_panel.button_rects["E field:show"]
+    pygame.event.post(pygame.event.Event(pygame.MOUSEBUTTONDOWN, pos=rect.center, button=1))
+    app.handle_events()
+    assert not app.layers["E"].visible
+    assert (app.world.materials.kind == Material.VACUUM).all()
+
+
+def test_l_hides_layer_panel(app):
+    press(app, pygame.K_l)
+    app.render()
+    assert not app.layer_panel.visible and app.layer_panel.rect is None
+
+
+def test_displayed_e_field_is_smoothed_but_follows_edits_immediately(app):
+    click(app, (10, 10), 1)
+    app.render()
+    app.paused = True
+    # Painting while paused (no simulated time passes) must still show up at once.
+    press(app, pygame.K_3)
+    click(app, (14, 10), 1)
+    np.testing.assert_allclose(app.display_e_field(), app.electric.grid(app.world))
+    # While running, the display lags behind a sudden change in the electrons.
+    app.paused = False
+    app.world.particles.pos[:] += 0.3
+    app.sim_time += 0.01
+    shown, actual = app.display_e_field(), app.electric.grid(app.world)
+    assert not np.allclose(shown, actual)

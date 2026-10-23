@@ -162,8 +162,13 @@ tests/                          # physics sanity tests
    teleport, so they carry no velocity). Display uses the smoothed current; red = out of screen,
    blue = into (screen y is down, so +Bz is *into* the screen). c = 2 by default.
 9. **Poynting** — S = E×B/μ0 per cell, S layer.
+   Done (green arrows, `S` key, off by default). Battery → resistor demo shows energy flowing
+   through space into the resistor. In-plane flux around a resistor is ~1/6 of I²R: expected,
+   since 3D point-charge fields also carry energy above/below the plane (§1 geometry choice).
 10. **Visualisation controls** — per layer: on/off, scale, opacity, linear/log; display EMA
     smoothing; small side panel (keyboard shortcuts first, clickable panel after).
+    Done: `layers.py` (Layer state + clickable LayerPanel, top right, `L` toggles). Display E is
+    an EMA in *simulated* time (frozen while paused, reset on paint); B from smoothed current.
 11. **Performance** — profile; FFT-convolution field solver if needed (§10).
 12. **Stretch** — save/load scenes (JSON/npz); optional FDTD/PIC field mode for induction & waves.
 

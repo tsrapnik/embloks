@@ -283,3 +283,13 @@ class MagneticField:
         jx = deposit(p.pos, p.charge * p.vel[:, 0], m.cols, m.rows)
         jy = deposit(p.pos, p.charge * p.vel[:, 1], m.cols, m.rows)
         return np.stack([jx, jy], axis=-1)
+
+
+def poynting(e_grid: np.ndarray, bz: np.ndarray, settings: Settings) -> np.ndarray:
+    """Poynting vector S = E x B / mu0 per cell, shape (cols, rows, 2): energy flow.
+
+    With E in the plane and B = (0, 0, B_z), E x B = (E_y B_z, -E_x B_z) is back
+    in the plane. 1/mu0 = c^2 / (4 pi k) in our units.
+    """
+    inv_mu0 = settings.speed_of_light**2 / (4 * np.pi * settings.coulomb_k)
+    return inv_mu0 * np.stack([e_grid[..., 1] * bz, -e_grid[..., 0] * bz], axis=-1)
