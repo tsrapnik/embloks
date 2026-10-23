@@ -117,3 +117,43 @@ def test_unconnected_battery_does_nothing():
     simulate(w, 1)
     assert len(w.particles) == len(before)
     assert not w.pump_current
+
+
+@pytest.mark.parametrize("charge_to_mass", [0.5, 1.0, 4.0])
+def test_ohms_law_does_not_depend_on_charge_to_mass(charge_to_mass):
+    """Drift current I = E / R must hold for any electron charge/mass (drag scales with it)."""
+    s = Settings(carrier_charge_to_mass=charge_to_mass)
+    w = World(30, 20, s, rng=np.random.default_rng(0))
+    loop = rectangle(4, 23, 3, 12)
+    w.paint(loop[:, 0], loop[:, 1], Material.CONDUCTOR, resistance=0.5)
+    w.paint(np.array([14]), np.array([12]), Material.BATTERY, emf=2, orientation=Orientation.RIGHT)
+    expected = 2 / ((len(loop) - 1) * 0.5 + s.battery_resistance)
+    simulate(w, 30)
+    top = (np.arange(6, 22), np.full(16, 3))
+    samples = []
+    for _ in range(20):
+        simulate(w, 0.5)
+        samples.append(physics.current_density(w)[top][:, 0].mean())
+    assert -np.mean(samples) == pytest.approx(expected, rel=0.25)
+
+
+def test_reported_current_is_the_charge_actually_moved_not_the_commanded_rate():
+    s = Settings(carriers_per_cell=8, cell_charge=4)  # Electrons of -0.5 e.
+    w = World(10, 6, s, rng=np.random.default_rng(0))
+    w.paint(np.arange(1, 4), np.full(3, 2), Material.CONDUCTOR, resistance=1)
+    w.paint(np.arange(5, 8), np.full(3, 2), Material.CONDUCTOR, resistance=1)
+    w.paint(np.array([4]), np.array([2]), Material.BATTERY, emf=5, orientation=Orientation.RIGHT)
+    [stack] = w.stacks
+    # Flat potential: V = 0, so the battery commands (5 - 0) / 0.1 = 50 per time unit,
+    # i.e. 50 * dt = 1.67 e this tick: three whole electrons (1.5 e) get moved.
+    dt = 1 / 30
+    battery.pump(w, np.zeros((10, 6)), dt, s)
+    alpha = dt / s.current_smoothing_time
+    assert w.pump_current[stack] == pytest.approx(alpha * 1.5 / dt)
+    assert w.pump_charge[stack] == pytest.approx(50 * dt - 1.5)
+    # At V = EMF the battery commands nothing: no move, and the reading decays.
+    potential = np.zeros((10, 6))
+    potential[5:, :] = 5.0  # The + terminal side sits 5 above the - side.
+    before = w.pump_current[stack]
+    battery.pump(w, potential, dt, s)
+    assert w.pump_current[stack] == pytest.approx(before * (1 - alpha))

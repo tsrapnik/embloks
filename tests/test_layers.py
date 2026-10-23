@@ -57,3 +57,28 @@ def test_panel_sits_top_right_and_ignores_clicks_elsewhere_or_when_hidden(panel)
     panel.visible = False
     panel.draw(surface)
     assert not panel.handle_click(panel.button_rects["E field:show"].center)
+
+
+def test_auto_gain_settles_so_the_strongest_values_reach_full_strength():
+    layer = Layer("B", auto=True, log_scale=False)
+    magnitude = np.linspace(0, 0.02, 1000)
+    for _ in range(200):
+        t = layer.intensity(magnitude, 1e-3, 1.0)
+    assert np.percentile(t[t > 0], 99) == pytest.approx(1, rel=0.02)
+    assert layer.gain_label == "auto"
+
+
+def test_stepping_the_gain_leaves_auto_from_the_reached_gain():
+    layer = Layer("B", auto=True)
+    layer.gain = 7.3  # Wherever auto had got to.
+    layer.step_gain(1)
+    assert not layer.auto and layer.gain == 16
+    assert layer.gain_label == "×16"
+    layer.step_gain(-8)
+    assert layer.gain_label == "×1/16"
+
+
+def test_clicking_the_scale_value_toggles_auto(panel):
+    panel, (e, _), surface = panel
+    panel.handle_click(panel.button_rects["E field:scale:value"].center)
+    assert e.auto

@@ -20,11 +20,21 @@ class Layer:
     gain: float = 1.0
     opacity: float = 1.0
     log_scale: bool = True
+    # Auto: the gain follows the field so its strongest ~1% just reaches full strength.
+    auto: bool = False
     # Particles can only be shown or hidden.
     adjustable: bool = True
 
     def step_gain(self, steps: int) -> None:
+        """Manual gain step. Leaves auto mode, stepping from the gain auto had reached."""
+        self.auto = False
         self.gain = _step(GAINS, self.gain, steps)
+
+    @property
+    def gain_label(self) -> str:
+        if self.auto:
+            return "auto"
+        return f"×{self.gain:g}" if self.gain >= 1 else f"×1/{round(1 / self.gain)}"
 
     def step_opacity(self, steps: int) -> None:
         self.opacity = _step(OPACITIES, self.opacity, steps)
@@ -35,6 +45,8 @@ class Layer:
         Log scale maps [low, high] onto [0, 1] logarithmically; linear scale maps
         [0, high] linearly. The gain shifts which magnitudes reach full strength.
         """
+        if self.auto:
+            self._follow(magnitude, high)
         scaled = magnitude * self.gain
         if self.log_scale:
             with np.errstate(divide="ignore"):
@@ -42,6 +54,16 @@ class Layer:
         else:
             t = scaled / high
         return np.clip(t, 0, 1)
+
+
+    def _follow(self, magnitude: np.ndarray, high: float) -> None:
+        """Move the gain towards high / (99th percentile), smoothly, in log space."""
+        nonzero = magnitude[magnitude > 0]
+        if len(nonzero) == 0:
+            return
+        target = high / np.percentile(nonzero, 99)
+        # A fraction of the way per frame, so the colours don't pump with noise.
+        self.gain = float(np.clip(self.gain * (target / self.gain) ** 0.15, 1e-6, 1e6))
 
 
 def _step(values: tuple[float, ...], current: float, steps: int) -> float:
@@ -88,7 +110,7 @@ class LayerPanel:
         widths = {
             "label": max(font.size(layer.label)[0] for layer in self.layers),
             "show": font.size("off")[0] + 16,
-            "value": font.size("100%")[0] + 4,
+            "value": max(font.size("100%")[0], font.size("auto")[0], font.size("×1/16")[0]) + 10,
             "mode": font.size("linear")[0] + 12,
         }
         row_width = (
@@ -133,20 +155,25 @@ class LayerPanel:
             x += widths["show"] + gap
             if layer.adjustable:
                 x = self._stepper(surface, f"{name}:scale", x, y, small, widths["value"], height,
-                                  f"×{layer.gain:g}", layer.step_gain) + gap
+                                  layer.gain_label, layer.step_gain,
+                                  lambda layer=layer: setattr(layer, "auto", not layer.auto)) + gap
                 x = self._stepper(surface, f"{name}:opacity", x, y, small, widths["value"], height,
-                                  f"{layer.opacity:.0%}", layer.step_opacity) + gap
+                                  f"{layer.opacity:.0%}", layer.step_opacity, None) + gap
                 self._button(surface, f"{name}:mode", (x, y, widths["mode"], height),
                              "log" if layer.log_scale else "linear", False,
                              lambda layer=layer: setattr(layer, "log_scale", not layer.log_scale))
             y += height + gap
 
-    def _stepper(self, surface, name, x, y, small, value_width, height, text, step) -> int:
-        """[-] value [+]; returns the x just past it."""
+    def _stepper(self, surface, name, x, y, small, value_width, height, text, step, click) -> int:
+        """[-] value [+]; returns the x just past it. `click` makes the value a button."""
         self._button(surface, f"{name}-", (x, y, small, height), "−", False, lambda: step(-1))
-        value = self.font.render(text, True, self.settings.hud_text_color)
-        surface.blit(value, (x + small + (value_width - value.get_width()) // 2,
-                             y + (height - value.get_height()) // 2))
+        if click is None:
+            value = self.font.render(text, True, self.settings.hud_text_color)
+            surface.blit(value, (x + small + (value_width - value.get_width()) // 2,
+                                 y + (height - value.get_height()) // 2))
+        else:
+            self._button(surface, f"{name}:value", (x + small + 1, y, value_width - 2, height),
+                         text, text == "auto", click)
         x += small + value_width
         self._button(surface, f"{name}+", (x, y, small, height), "+", False, lambda: step(1))
         return x + small

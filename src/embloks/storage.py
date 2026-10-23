@@ -33,7 +33,7 @@ PHYSICS_SETTINGS = (
     "test_charge_softening",
 )
 
-LAYER_FIELDS = ("visible", "gain", "opacity", "log_scale")
+LAYER_FIELDS = ("visible", "gain", "opacity", "log_scale", "auto")
 
 
 def save(app, path: Path) -> None:

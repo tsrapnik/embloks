@@ -83,7 +83,7 @@ SCENES = [
         "Battery and resistor",
         "energy (green S arrows) flows from the battery through space into the resistor",
         40, battery_and_resistor,
-        {"E": {"visible": False}, "S": {"visible": True}, "B": {"opacity": 0.5}},
+        {"E": {"visible": False}, "S": {"visible": True}},
     ),
     Scene(
         "Screening",

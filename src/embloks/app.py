@@ -119,7 +119,7 @@ class App:
     def reset_layers(self) -> None:
         """Put every display layer back to its start-up settings (same Layer objects)."""
         for key, fresh in default_layers().items():
-            for name in ("visible", "gain", "opacity", "log_scale"):
+            for name in ("visible", "gain", "opacity", "log_scale", "auto"):
                 setattr(self.layers[key], name, getattr(fresh, name))
 
     def load_scene(self, index: int) -> None:
@@ -453,9 +453,12 @@ class App:
 def default_layers() -> dict[str, Layer]:
     return {
         "E": Layer("E field"),
-        "B": Layer("B field"),
+        # B and S grow with the current (S with current squared), so they scale themselves;
+        # a fixed scale would saturate the whole screen for strong currents. B is linear:
+        # on a log scale a loop's weak return field outside looks nearly as strong as inside.
+        "B": Layer("B field", auto=True, log_scale=False),
         # Off by default: Poynting arrows sit on the same cells as the E arrows.
-        "S": Layer("S energy flow", visible=False),
+        "S": Layer("S energy flow", visible=False, auto=True),
         "P": Layer("Particles", adjustable=False),
     }
 

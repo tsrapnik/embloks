@@ -196,6 +196,23 @@ tests/                          # physics sanity tests
       sloshing currents).
     Look at algorithms and parameters (pump smoothing, carrier density, damping, time step,
     display averaging) and verify each change against the existing physics tests.
+    Done. Findings (measured on F1, B "flicker" = frame-to-frame std / mean near battery):
+    - Battery jitter, two causes. (1) The B display took the battery current from the
+      *commanded* pump rate (ℰ − V)/R_int, which swings ±4.7 between single-electron moves;
+      now it is the charge actually moved, smoothed like wire currents. (2) Charge quantum:
+      noise ∝ electron charge. carriers 4 → 8 (−0.5 e) plus 2 time units of current averaging:
+      flicker 0.60 → 0.16, tick 0.7 → 0.8 ms. Not helping: larger R_int (no effect), filtering
+      the battery's voltage (feedback lag, 2-4x worse).
+    - "B all over the place" with low R: not sloshing (current settles smoothly, ±10%) but
+      display — 10x current saturated a fixed log colour window, and log made the weak return
+      field outside a loop look as strong as inside. Now B and S auto-scale; B defaults to linear.
+    - Electron stacking (60-90% within 0.02 cells): the grid's pair force is ~4.5x too weak
+      inside a cell (double smoothing). An exact P3M short-range correction was built and
+      verified; it removes stacking only at 4 carriers, costs 3-10x per tick, and with 8+
+      carriers stacking costs little energy anyway (spacing ≪ softening). Not kept.
+    - Ohm's law in 1-cell wires: +16..27% / −17% depending on geometry; 3-cell wires within
+      ~4%. A resolution limit (field can't step faster than the ~1 cell smoothing), documented.
+    - Drag now scales with q/m too (Γ = R·cell_charge·q/m), so I = E/R for any q/m.
 15. **Optional: induction & waves (FDTD/PIC)** — decide later whether to add it at all.
     Today fields follow charges instantly (Coulomb + Biot–Savart). A field *solver* instead
     stores E and B on the grid and steps Maxwell's equations forward in time (FDTD, 2D TE mode:

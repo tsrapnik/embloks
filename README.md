@@ -85,8 +85,10 @@ between the islands at their terminals instead.
 Every conductor cell holds:
 
 - one fixed **positive ion** (red ring) at its centre, with charge +4 e (`cell_charge`), and
-- 4 **electrons** (blue dots) of charge -1 e each (`carriers_per_cell`), which move freely
-  within their island (see *Electron motion*), so the cell is neutral overall.
+- 8 **electrons** (blue dots) of charge -0.5 e each (`carriers_per_cell`), which move freely
+  within their island (see *Electron motion*), so the cell is neutral overall. Splitting the
+  charge finely matters: a battery moves one electron at a time, so smaller electrons mean a
+  steadier current (see *Batteries*).
 
 The charge per cell sets how many free electrons a wire has. Batteries need to pile up some
 charge on their terminals to hold their voltage, and a wire with too few electrons would simply
@@ -230,12 +232,16 @@ top-right corner (`L` hides it) has a row per layer; click its buttons to change
 
 - **show**: on / off (same as the `E`, `B`, `S`, `P` keys),
 - **scale**: −/+ halves or doubles the gain (×1/16 to ×16). Fields are multiplied by it
-  before drawing, so weak fields become visible (or strong ones stop saturating),
+  before drawing, so weak fields become visible (or strong ones stop saturating). Click the
+  value to switch to **auto**: the gain then follows the field so that its strongest ~1% just
+  reaches full strength. B and S start in auto: they grow with the current (S with the current
+  squared), so a fixed scale would wash out the whole screen in a low-resistance circuit,
 - **opacity**: −/+ steps through 10% to 100%, e.g. keep E faintly in the background while
   watching S,
-- **mode**: **log** (default) or **linear**. Log scale shows weak and strong fields side by
-  side; linear scale makes arrow length (or colour strength) proportional to the field, which
-  is honest about *how much* stronger one place is than another. Use scale to fit it.
+- **mode**: **log** or **linear**. Log scale shows weak and strong fields side by side;
+  linear scale makes arrow length (or colour strength) proportional to the field, which is
+  honest about *how much* stronger one place is than another. E and S start in log, B in linear:
+  on a log scale a loop's weak return field outside looks almost as strong as the field inside.
 
 Particles can only be shown or hidden. Clicks on the panel never paint.
 
@@ -276,8 +282,14 @@ vanish on the `+` side and appear on the `-` side.
 - **Series:** battery cells lined up end to end along their axis form one battery. Their EMFs
   add, and a cell pointing the other way subtracts. Each cell adds 0.1 internal resistance.
 - **Ohm's law:** in a closed loop the current settles at `EMF / total resistance`, where a wire
-  of N cells of resistance R has resistance N·R. Very small loops carry a little more, because
-  electrons cut the corners and the wire is effectively shorter than its cell count.
+  of N cells of resistance R has resistance N·R. In wires only one cell wide, expect up to ~20%
+  deviation: each charge is smeared over about a cell, so the field can't step sharply where a
+  thin wire meets a resistor. Wider wires get closer (3 cells wide: within ~4%).
+- **Lumpy currents:** a small current is made of few electrons. At 0.12 e per time unit only one
+  (-0.5 e) electron passes a point every ~4 time units, so readings averaged over a short time
+  scatter by 10-20%. That is real shot noise of discrete charges, not an error.
+- **Current reading:** the battery's current is the charge it actually moved, averaged like
+  the wire currents (over `current_smoothing_time`, 2 time units).
 - **Patience:** the surface charges that steer the current around the loop take a while to
   build up: about 60 time units for a long loop of resistance-1 wire (under 10 seconds at the
   default 8× speed), less for lower resistance. Speed up with `.` if it's still too slow.
@@ -298,8 +310,8 @@ the cell under the mouse it shows:
 - the electric potential **V**, field **E**, magnetic field **B** and energy flow **S** at
   its centre,
 - for conductors, the **current** through it: conventional current (the direction positive
-  charge would flow, opposite to the electrons), averaged over about a second
-  (`current_smoothing_time`).
+  charge would flow, opposite to the electrons), averaged over 2 time units
+  (`current_smoothing_time`), like an ammeter's response time.
 
 The window title shows the frame rate, simulation time, paused state and grid size
 (columns x rows).
@@ -358,9 +370,11 @@ Typical frame times at the default 8× speed, all field layers on:
 
 | Grid      | Electrons | Frame    |
 |-----------|-----------|----------|
-| 40 × 32   | ~1,500    | ~10 ms   |
-| 100 × 80  | ~10,000   | ~27 ms   |
-| 200 × 160 | ~38,000   | ~100 ms  |
+| 40 × 32   | ~3,000    | ~14 ms   |
+| 100 × 80  | ~19,000   | ~39 ms   |
+| 200 × 160 | ~76,000   | ~160 ms  |
+
+(30% of the canvas filled with wire, 8 electrons per cell.)
 
 On the largest grids the FFTs dominate (physics and display alike); the simulation then runs
 slower than the chosen speed instead of freezing.

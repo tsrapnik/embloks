@@ -100,19 +100,26 @@ def pump(world, potential: np.ndarray, dt: float, settings: Settings) -> None:
             world.pump_current.pop(stack, None)
             continue
         current = (stack.emf - (v_high - v_low)) / stack.internal_resistance
-        alpha = min(1.0, dt / settings.current_smoothing_time)
-        world.pump_current[stack] = world.pump_current.get(stack, 0.0) * (1 - alpha) + alpha * current
         # Positive current = conventional current low -> high inside the battery,
         # i.e. electrons taken at the high terminal and delivered at the low one.
         owed = world.pump_charge.get(stack, 0.0) + current * dt
         quantum = settings.cell_charge / settings.carriers_per_cell
+        moved = 0.0
         while abs(owed) >= quantum:
             source, target = (stack.high, stack.low) if owed > 0 else (stack.low, stack.high)
             if not _move_electron(world, source, target):
                 owed = 0.0  # Source side has no electrons left; don't build up a debt.
                 break
-            owed -= np.sign(owed) * quantum
+            step = np.sign(owed) * quantum
+            owed -= step
+            moved += step
         world.pump_charge[stack] = owed
+        # The battery's current is the charge it actually moved, smoothed like wire
+        # currents. (The commanded rate above swings wildly between single-electron
+        # transfers and is not a current.)
+        alpha = min(1.0, dt / settings.current_smoothing_time)
+        previous = world.pump_current.get(stack, 0.0)
+        world.pump_current[stack] = previous + alpha * (moved / dt - previous)
         if len(p) == 0:
             break
 

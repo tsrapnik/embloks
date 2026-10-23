@@ -83,3 +83,19 @@ def test_series_scene_drives_three_times_the_current(app):
         left.append(current[5:16, 8, 0].mean())
         right.append(current[24:35, 8, 0].mean())
     assert np.mean(right) / np.mean(left) == pytest.approx(3, rel=0.2)
+
+
+def test_magnetic_field_next_to_the_battery_is_steady(app):
+    """Regression for the jitter next to the battery (was ~0.6, now ~0.16)."""
+    app.load_scene(0)
+    app.world.rng = np.random.default_rng(0)
+    run(app, 40)
+    samples = []
+    for i in range(int(20 / app.settings.dt)):
+        app.step(app.settings.dt)
+        if i % 4 == 0:  # One displayed frame at 8x speed.
+            b = app.magnetic.grid(app.world, app.current + battery.current_grid(app.world))
+            samples.append(b[11:13, 13:18].ravel())
+    samples = np.array(samples)
+    flicker = samples.std(axis=0).mean() / np.abs(samples.mean(axis=0)).mean()
+    assert flicker < 0.3

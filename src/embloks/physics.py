@@ -10,9 +10,14 @@ _WALL_GAP = 1e-6
 
 
 def damping_rates(world, cols: np.ndarray, rows: np.ndarray, settings: Settings) -> np.ndarray:
-    """Drag rate (1/time) for particles in the given cells: proportional to resistance."""
+    """Drag rate (1/time) for particles in the given cells: proportional to resistance.
+
+    Drift speed is v = (q/m) E / rate and current per cell I = cell_charge * v, so
+    rate = R * cell_charge * (q/m) makes I = E / R for any charge density or q/m.
+    """
     s = settings
-    return world.materials.resistance[cols, rows] * s.drag_per_resistance * s.cell_charge
+    per_ohm = s.drag_per_resistance * s.cell_charge * s.carrier_charge_to_mass
+    return world.materials.resistance[cols, rows] * per_ohm
 
 
 def current_density(world) -> np.ndarray:

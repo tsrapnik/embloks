@@ -55,19 +55,23 @@ class Settings:
     # that wires don't run out of electrons doing so (real metals have plenty).
     cell_charge: float = 4.0
     # Electrons per conductor cell; each carries -cell_charge / n so cells stay neutral.
-    carriers_per_cell: int = 4
+    # Finer charge means less graininess: a battery moves one electron at a time, and
+    # with 8 (charge -0.5 each) its current and the B field near it are ~2x steadier
+    # than with 4, at little cost.
+    carriers_per_cell: int = 8
     # |charge| / mass of an electron, the same for any carriers_per_cell.
     carrier_charge_to_mass: float = 1.0
 
     # Drag on electrons: damping rate (1/time) = resistance * drag_per_resistance *
-    # cell_charge. Scaling with the carrier density makes a cell of resistance R carry
-    # current I = E / R (charge per time), i.e. R is in ohms.
+    # cell_charge * carrier_charge_to_mass. Scaling with carrier density and charge/mass
+    # makes a cell of resistance R carry current I = E / R (charge per time): R is in ohms.
     drag_per_resistance: float = 1.0
     # Internal resistance per battery cell. A perfect battery would have 0; a small value
     # keeps the pump from overshooting: it moves charge at (EMF - V) / resistance.
     battery_resistance: float = 0.1
-    # Displayed currents are averaged over roughly this much simulation time.
-    current_smoothing_time: float = 1.0
+    # Displayed currents (and the battery currents that feed B) are averaged over roughly
+    # this much simulation time, like an ammeter's response time.
+    current_smoothing_time: float = 2.0
     # Fraction of normal velocity kept when an electron bounces off a closed cell face.
     wall_restitution: float = 0.3
     # Largest move (cells) per substep, and the cap on substeps per tick.
