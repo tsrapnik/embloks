@@ -138,3 +138,44 @@ the brush size, the number of electrons and islands, and what is in the cell und
 
 The window title shows the frame rate, simulation time, paused state and grid size
 (columns x rows).
+
+## Under the hood
+
+### Libraries
+
+- **[pygame-ce](https://pyga.me/)**: window, mouse/keyboard input and drawing.
+- **[NumPy](https://numpy.org/)**: all simulation state lives in arrays (one entry per cell or
+  per electron), so every step is a handful of vectorised operations instead of Python loops.
+- **[SciPy](https://scipy.org/)**: FFTs for the field calculation, and connected-component
+  labelling to find islands.
+- **[pytest](https://pytest.org/)**: tests, including physics checks (Coulomb's law, screening,
+  electrons never escaping their island).
+
+### Techniques and optimizations
+
+- **Charge smoothing (softening).** Each charge is treated as a small blurred cloud rather than
+  a point: `E = k·q·r / (r² + ε²)^1.5`. This keeps fields finite when charges get close, makes a
+  charge's field at its own centre zero (so nothing pushes itself), and smooths the ions into an
+  even positive background that electrons can glide over. Ions and electrons share the same ε, so
+  an electron sitting on its ion cancels it exactly.
+- **Fields via FFT.** Summing every charge's field at every cell costs
+  `cells × charges` operations. Instead, the charges are put on the grid and the field is
+  computed as a convolution with the Coulomb kernel using FFTs, which costs about
+  `cells × log(cells)` no matter how many electrons there are. The kernel's FFT is computed once
+  per grid size.
+- **Cloud-in-cell.** Electrons sit anywhere, not just on cell centres, so each one's charge is
+  shared over the 4 nearest cell centres in proportion to how close it is. Each electron reads
+  the field back with exactly the same weights. This symmetry means an electron feels no force
+  from itself, and every push between two electrons is equal and opposite.
+- **Caching.** Ions and test charges only change when you paint, so their field is computed once
+  and reused until then. Each tick only the electrons' part is recomputed. The material image is
+  likewise only redrawn after painting.
+- **Stable drag.** Resistance is applied implicitly, `v ← (v + a·dt) / (1 + Γ·dt)`, which stays
+  stable for any resistance; a simple explicit update would blow up at high resistance.
+- **Substeps.** If electrons move fast, a tick is split into smaller steps so that nothing moves
+  more than 0.4 cell at a time and can't tunnel through a one-cell wall.
+- **Drawing.** On fine grids only every n-th cell gets a field arrow, and with many electrons they
+  are drawn as single pixels written straight into the screen array.
+
+The result: on a 200×160 grid with ~10,000 electrons a physics tick takes ~3 ms and a frame
+~20 ms.
