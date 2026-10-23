@@ -90,7 +90,7 @@ def test_right_click_erases(app):
 
 
 def test_battery_tool_paints_with_brush_orientation(app):
-    press(app, pygame.K_3)
+    press(app, pygame.K_2)
     press(app, pygame.K_r)
     mouse(app, pygame.MOUSEBUTTONDOWN, (1, 1), button=1)
     assert app.world.materials.kind[1, 1] == Material.BATTERY
@@ -98,26 +98,52 @@ def test_battery_tool_paints_with_brush_orientation(app):
     assert app.world.materials.emf[1, 1] == app.settings.default_emf
 
 
-def test_render_runs_with_all_materials(app):
-    for key, cell in ((pygame.K_2, (1, 1)), (pygame.K_3, (2, 1))):
+def click(app, cell, button):
+    mouse(app, pygame.MOUSEBUTTONDOWN, cell, button=button)
+    mouse(app, pygame.MOUSEBUTTONUP, cell, button=button)
+
+
+def test_render_runs_with_info_for_every_kind_of_cell(app):
+    for key, cell in ((pygame.K_1, (1, 1)), (pygame.K_2, (2, 1)), (pygame.K_3, (5, 5))):
         press(app, key)
-        mouse(app, pygame.MOUSEBUTTONDOWN, cell, button=1)
-        mouse(app, pygame.MOUSEBUTTONUP, cell, button=1)
-    app.render()
+        click(app, cell, 1)
+    for cell in ((1, 1), (2, 1), (5, 5), (9, 9)):
+        app.hovered_cell = cell
+        app.render()
 
 
-def test_charge_tool_places_and_right_click_removes_only_charges(app):
-    press(app, pygame.K_2)
-    mouse(app, pygame.MOUSEBUTTONDOWN, (3, 3), button=1)
-    mouse(app, pygame.MOUSEBUTTONUP, (3, 3), button=1)
-    press(app, pygame.K_4)
+def test_right_click_removes_test_charge_first_then_material(app):
+    click(app, (3, 3), 1)  # Conductor (default tool).
+    press(app, pygame.K_3)
     press(app, pygame.K_DOWN)
-    mouse(app, pygame.MOUSEBUTTONDOWN, (3, 3), button=1)
-    mouse(app, pygame.MOUSEBUTTONUP, (3, 3), button=1)
+    click(app, (3, 3), 1)
     assert app.world.fixed_charge.tolist() == [app.brush.charge]
     assert app.brush.charge < app.settings.default_test_charge
-    mouse(app, pygame.MOUSEBUTTONDOWN, (3, 3), button=3)
-    mouse(app, pygame.MOUSEBUTTONUP, (3, 3), button=3)
+    click(app, (3, 3), 3)
     assert len(app.world.fixed_charge) == 0
     assert app.world.materials.kind[3, 3] == Material.CONDUCTOR
-    app.render()
+    click(app, (3, 3), 3)
+    assert app.world.materials.kind[3, 3] == Material.VACUUM
+
+
+def test_erase_drag_starting_on_a_charge_never_erases_material(app):
+    for col in range(2, 8):
+        click(app, (col, 4), 1)
+    press(app, pygame.K_3)
+    click(app, (2, 4), 1)
+    click(app, (6, 4), 1)
+    mouse(app, pygame.MOUSEBUTTONDOWN, (2, 4), button=3)
+    mouse(app, pygame.MOUSEMOTION, (7, 4), buttons=(0, 0, 1))
+    mouse(app, pygame.MOUSEMOTION, (2, 4), buttons=(0, 0, 1))
+    mouse(app, pygame.MOUSEBUTTONUP, (2, 4), button=3)
+    assert len(app.world.fixed_charge) == 0
+    assert (app.world.materials.kind[2:8, 4] == Material.CONDUCTOR).all()
+
+
+def test_h_cycles_info_panel(app):
+    seen = [app.hud_mode]
+    for _ in range(3):
+        press(app, pygame.K_h)
+        seen.append(app.hud_mode)
+        app.render()
+    assert seen == ["full", "status", "hidden", "full"]

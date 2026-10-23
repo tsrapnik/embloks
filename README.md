@@ -27,21 +27,26 @@ video driver). Configuration is the `[tool.pytest.ini_options]` section of `pypr
 
 ## Using the app
 
-| Input               | Action                                            |
-|---------------------|---------------------------------------------------|
-| Left mouse (drag)   | Paint with the current tool                       |
-| Right mouse (drag)  | Erase (paint vacuum)                              |
-| `1` - `4`           | Tool: vacuum / conductor / battery / test charge  |
-| Up / Down           | Tool value: resistance / EMF / charge             |
-| `R`                 | Rotate battery orientation (clockwise)            |
-| `[` / `]` or wheel  | Smaller / larger brush                            |
-| `C`                 | Clear the canvas                                  |
-| `P`                 | Hide / show particles (ions and electrons)        |
-| `E`                 | Hide / show electric field arrows                 |
-| `H`                 | Hide / show the info panel                        |
-| `+` / `-`           | Finer / coarser grid (resets the scene)           |
-| Space               | Pause / resume physics                            |
-| Esc                 | Quit                                              |
+| Input               | Action                                                        |
+|---------------------|---------------------------------------------------------------|
+| Left mouse (drag)   | Paint with the current tool                                   |
+| Right mouse (drag)  | Erase: test charges if one is under the brush, else material  |
+| `1` / `2` / `3`     | Tool: conductor / battery / test charge                       |
+| Up / Down           | Tool value: resistance / EMF / charge                         |
+| `R`                 | Rotate battery orientation (clockwise)                        |
+| `[` / `]` or wheel  | Smaller / larger brush                                        |
+| `C`                 | Clear the canvas                                              |
+| `P`                 | Hide / show particles (ions and electrons)                    |
+| `E`                 | Hide / show electric field arrows                             |
+| `H`                 | Info panel: full / status only / hidden                       |
+| `+` / `-`           | Finer / coarser grid (resets the scene)                       |
+| Space               | Pause / resume physics                                        |
+| Esc                 | Quit                                                          |
+
+**Erasing:** right-click decides once, when you press the button: if a test charge is under the
+brush, that stroke removes test charges only (dragging over wires leaves them intact); otherwise
+it erases materials back to vacuum. So right-clicking a charged wire twice first removes the
+charge, then the wire.
 
 ### Grid
 
@@ -52,7 +57,7 @@ canvas. On very fine grids the grid lines are hidden so they don't drown out the
 
 ### Materials
 
-Every cell is one of:
+Every cell is one of (erase with right-click to get vacuum back):
 
 - **Vacuum** (dark): empty space.
 - **Conductor** (copper): carries charge. Each conductor cell has a resistance in ohms, picked
@@ -91,10 +96,10 @@ Ion rings are only drawn when cells are large enough; on fine grids electrons be
 
 ### Test charges
 
-Tool `4` places fixed **test charges** (red with `+`, blue with `-`) at cell centres, anywhere on
+Tool `3` places fixed **test charges** (red with `+`, blue with `-`) at cell centres, anywhere on
 the canvas, including on top of conductors. Pick the charge (-10 e to +10 e) with Up/Down. A larger
-brush paints a whole charged plate, one charge per cell. With this tool, right-click removes test
-charges and leaves materials alone. Test charges never move; use them to poke at conductors.
+brush paints a whole charged plate, one charge per cell. Right-click removes test
+charges (see *Erasing* above). Test charges never move; use them to poke at conductors.
 
 ### Electric field
 
@@ -166,9 +171,11 @@ Hover over a battery to see its stack's EMF, the measured terminal voltage and i
 
 ### Info panel
 
-The brush outline follows the mouse. The info panel (top-left) shows the current tool, its value,
-the brush size, the number of electrons and islands, and the mean |E| inside conductors. For the
-cell under the mouse it shows:
+The brush outline follows the mouse. The info panel (top-left) has up to three sections, with
+labels in blue on the left: the **status** (current tool and its value, brush size, numbers of
+electrons, islands and test charges, mean |E| inside conductors), the **cell under the mouse**,
+and the **keys**. `H` cycles between showing all of it, only status and cell, and nothing. For
+the cell under the mouse it shows:
 
 - the material, island number and electron count (or the battery's stack details),
 - the electric potential **V** and field **E** at its centre,

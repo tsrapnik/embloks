@@ -9,8 +9,8 @@ from embloks.materials import Material, Orientation
 
 
 class Tool(IntEnum):
-    # The material tools share their values with Material.
-    VACUUM = Material.VACUUM
+    # The material tools share their values with Material. Vacuum has no tool:
+    # right-click erases.
     CONDUCTOR = Material.CONDUCTOR
     BATTERY = Material.BATTERY
     CHARGE = 3

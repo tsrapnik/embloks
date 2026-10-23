@@ -130,19 +130,47 @@ def draw_brush_outline(
         pygame.draw.rect(surface, settings.hover_color, grid.cell_rect(col, row), width=1)
 
 
-def draw_hud(surface: pygame.Surface, font: pygame.font.Font, lines: list[str], settings: Settings):
-    """Text lines in a translucent box at the top-left corner."""
-    rendered = [font.render(line, True, settings.hud_text_color) for line in lines]
-    pad = 6
-    width = max(r.get_width() for r in rendered) + 2 * pad
-    height = sum(r.get_height() for r in rendered) + 2 * pad
+def draw_hud(
+    surface: pygame.Surface,
+    font: pygame.font.Font,
+    sections: list[list[tuple[str, str]]],
+    settings: Settings,
+) -> None:
+    """Info panel at the top-left: sections of (label, value) rows, split by thin rules.
+
+    Labels form their own column in an accent colour, so it is always clear which
+    text belongs to which label.
+    """
+    pad, label_gap, row_gap, section_gap = 10, 14, 3, 14
+    rendered = [
+        [
+            (font.render(label, True, settings.hud_label_color),
+             font.render(value, True, settings.hud_text_color))
+            for label, value in section
+        ]
+        for section in sections
+        if section
+    ]
+    label_width = max(lab.get_width() for section in rendered for lab, _ in section)
+    value_x = pad + label_width + label_gap
+    width = value_x + max(val.get_width() for section in rendered for _, val in section) + pad
+    line_height = font.get_linesize() + row_gap
+    rows = sum(len(section) for section in rendered)
+    height = 2 * pad + rows * line_height + (len(rendered) - 1) * section_gap
+
     box = pygame.Surface((width, height), pygame.SRCALPHA)
     box.fill(settings.hud_background)
     surface.blit(box, (0, 0))
     y = pad
-    for r in rendered:
-        surface.blit(r, (pad, y))
-        y += r.get_height()
+    for i, section in enumerate(rendered):
+        if i:
+            rule_y = y + section_gap // 2 - row_gap
+            pygame.draw.line(surface, settings.hud_rule_color, (pad, rule_y), (width - pad, rule_y))
+            y += section_gap
+        for label, value in section:
+            surface.blit(label, (pad, y))
+            surface.blit(value, (value_x, y))
+            y += line_height
 
 
 def arrow_stride(grid: Grid, settings: Settings) -> int:

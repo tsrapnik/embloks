@@ -104,11 +104,15 @@ class World:
         self.fixed_charge = np.concatenate([self.fixed_charge, np.full(len(cells), charge)])
         self.fixed_version += 1
 
-    def remove_charges(self, cols: np.ndarray, rows: np.ndarray) -> None:
-        """Remove the fixed test charges in the given cells."""
+    def charges_in(self, cols: np.ndarray, rows: np.ndarray) -> np.ndarray:
+        """Mask over the fixed test charges: which sit in one of the given cells."""
         fixed_cells = np.floor(self.fixed_pos).astype(np.int64)
         n_rows = self.materials.rows
-        hit = np.isin(fixed_cells[:, 0] * n_rows + fixed_cells[:, 1], cols * n_rows + rows)
+        return np.isin(fixed_cells[:, 0] * n_rows + fixed_cells[:, 1], cols * n_rows + rows)
+
+    def remove_charges(self, cols: np.ndarray, rows: np.ndarray) -> None:
+        """Remove the fixed test charges in the given cells."""
+        hit = self.charges_in(cols, rows)
         self.fixed_pos = self.fixed_pos[~hit]
         self.fixed_charge = self.fixed_charge[~hit]
         self.fixed_version += 1

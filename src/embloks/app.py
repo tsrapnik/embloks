@@ -12,11 +12,25 @@ from embloks.world import World
 DENSITY_UP_KEYS = {pygame.K_PLUS, pygame.K_EQUALS, pygame.K_KP_PLUS}
 DENSITY_DOWN_KEYS = {pygame.K_MINUS, pygame.K_KP_MINUS}
 TOOL_KEYS = {
-    pygame.K_1: Tool.VACUUM,
-    pygame.K_2: Tool.CONDUCTOR,
-    pygame.K_3: Tool.BATTERY,
-    pygame.K_4: Tool.CHARGE,
+    pygame.K_1: Tool.CONDUCTOR,
+    pygame.K_2: Tool.BATTERY,
+    pygame.K_3: Tool.CHARGE,
 }
+# H cycles the info panel through these.
+HUD_MODES = ("full", "status", "hidden")
+KEY_HELP = [
+    ("Left drag", "paint with tool"),
+    ("Right drag", "erase: test charges if one is under the brush, else material"),
+    ("1  2  3", "tool: conductor / battery / test charge"),
+    ("Up  Down", "tool value: resistance / EMF / charge"),
+    ("R", "rotate battery"),
+    ("[  ]  wheel", "brush size"),
+    ("E  P", "show field arrows / particles"),
+    ("Space", "pause"),
+    ("+  -", "grid density (clears)"),
+    ("C", "clear all"),
+    ("H", "panel: full / status only / hidden"),
+]
 PAINT_BUTTON = 1
 ERASE_BUTTON = 3
 
@@ -32,7 +46,7 @@ class App:
         self.font = pygame.font.Font(None, self.settings.hud_font_size)
         self.running = True
         self.paused = False
-        self.show_hud = True
+        self.hud_mode = HUD_MODES[0]
         self.show_particles = True
         self.show_e_field = True
         self.electric = ElectricField(self.settings)
@@ -55,6 +69,8 @@ class App:
         # Mouse button held down for the current stroke, and the last cell it painted.
         self._stroke_button: int | None = None
         self._stroke_cell: tuple[int, int] | None = None
+        # Whether the current erase stroke removes test charges instead of materials.
+        self._erase_charges = False
 
     def change_density(self, factor: float) -> None:
         s = self.settings
@@ -81,9 +97,7 @@ class App:
             elif event.type == pygame.KEYDOWN:
                 self.handle_key(event.key)
             elif event.type == pygame.MOUSEBUTTONDOWN and event.button in (PAINT_BUTTON, ERASE_BUTTON):
-                self._stroke_button = event.button
-                self._stroke_cell = None
-                self.stroke_to(self.grid.cell_at(*event.pos))
+                self.start_stroke(event.button, self.grid.cell_at(*event.pos))
             elif event.type == pygame.MOUSEMOTION and self._stroke_button is not None:
                 self.stroke_to(self.grid.cell_at(*event.pos))
             elif event.type == pygame.MOUSEBUTTONUP and event.button == self._stroke_button:
@@ -121,7 +135,22 @@ class App:
         elif key == pygame.K_e:
             self.show_e_field = not self.show_e_field
         elif key == pygame.K_h:
-            self.show_hud = not self.show_hud
+            self.hud_mode = HUD_MODES[(HUD_MODES.index(self.hud_mode) + 1) % len(HUD_MODES)]
+
+    def start_stroke(self, button: int, cell: tuple[int, int] | None) -> None:
+        """Begin painting or erasing.
+
+        An erase stroke that starts with a test charge under the brush removes only
+        test charges, for the whole drag; otherwise it erases materials. Deciding once
+        per stroke keeps a drag from removing a charge and then the wire beneath it.
+        """
+        self._stroke_button = button
+        self._stroke_cell = None
+        self._erase_charges = False
+        if button == ERASE_BUTTON and cell is not None:
+            cols, rows = self.brush.footprint(cell, self.grid)
+            self._erase_charges = self.world.charges_in(cols, rows).any()
+        self.stroke_to(cell)
 
     def stroke_to(self, cell: tuple[int, int] | None) -> None:
         """Paint from the previous stroke cell to `cell`, leaving no gaps on fast drags."""
@@ -134,15 +163,13 @@ class App:
         cols = np.concatenate([f[0] for f in footprints])
         rows = np.concatenate([f[1] for f in footprints])
         b = self.brush
-        erasing = self._stroke_button == ERASE_BUTTON
-        if b.tool == Tool.CHARGE:
-            # The charge tool erases only test charges, never materials.
-            if erasing:
+        if self._stroke_button == ERASE_BUTTON:
+            if self._erase_charges:
                 self.world.remove_charges(cols, rows)
             else:
-                self.world.place_charges(cols, rows, b.charge)
-        elif erasing:
-            self.world.paint(cols, rows, Material.VACUUM)
+                self.world.paint(cols, rows, Material.VACUUM)
+        elif b.tool == Tool.CHARGE:
+            self.world.place_charges(cols, rows, b.charge)
         else:
             self.world.paint(cols, rows, b.tool.material, b.resistance, b.emf, b.orientation)
         self._stroke_cell = cell
@@ -191,77 +218,91 @@ class App:
         if self.hovered_cell is not None:
             cells = self.brush.footprint(self.hovered_cell, self.grid)
             render.draw_brush_outline(self.screen, self.grid, cells, s)
-        if self.show_hud:
-            render.draw_hud(self.screen, self.font, self.hud_lines(e_grid), s)
+        if self.hud_mode != "hidden":
+            render.draw_hud(self.screen, self.font, self.hud_sections(e_grid), s)
         pygame.display.flip()
         self.update_caption()
 
-    def hud_lines(self, e_grid: np.ndarray) -> list[str]:
-        b = self.brush
-        tool = f"Tool: {b.tool.label}"
-        if b.tool == Tool.CONDUCTOR:
-            tool += f"   resistance {b.resistance:g}"
-        elif b.tool == Tool.BATTERY:
-            tool += f"   EMF {b.emf:g}   + side {b.orientation.name.lower()}"
-        elif b.tool == Tool.CHARGE:
-            tool += f"   charge {b.charge:+g} e"
-        lines = [
-            tool,
-            f"Brush radius {b.radius}   Electrons {len(self.world.particles)}"
-            f"   Islands {self.world.connectivity.count}"
-            f"   Test charges {len(self.world.fixed_charge)}",
-            "1-4 tool   Up/Down value   R rotate   [ ] / wheel brush   C clear",
-            "E field arrows   P particles   H hide",
-        ]
-        conductive = self.world.materials.conductive
-        if conductive.any():
-            inside = np.hypot(*e_grid[conductive].T).mean()
-            lines.append(f"Mean |E| inside conductors {inside:.4f}")
+    def hud_sections(self, e_grid: np.ndarray) -> list[list[tuple[str, str]]]:
+        """Info panel content: sections of (label, value) rows."""
+        sections = [self.status_rows(e_grid)]
         if self.hovered_cell is not None:
-            col, row = self.hovered_cell
-            potential = self.electric.potential_grid(self.world)
-            lines.append(f"Cell {self.hovered_cell}: {self.describe_cell(col, row, potential)}")
-            ex, ey = e_grid[col, row]
-            lines.append(
-                f"V = {potential[col, row]:+.3g}   E = ({ex:+.3g}, {ey:+.3g})"
-                f"   |E| = {np.hypot(ex, ey):.3g}"
-            )
-            if self.world.materials.conductive[col, row]:
-                ix, iy = self.current[col, row]
-                lines.append(f"Current I = ({ix:+.3g}, {iy:+.3g})   |I| = {np.hypot(ix, iy):.3g}")
-        return lines
+            sections.append(self.cell_rows(*self.hovered_cell, e_grid))
+        if self.hud_mode == "full":
+            sections.append(KEY_HELP)
+        return sections
 
-    def describe_cell(self, col: int, row: int, potential: np.ndarray) -> str:
-        m = self.world.materials
+    def status_rows(self, e_grid: np.ndarray) -> list[tuple[str, str]]:
+        b = self.brush
+        tool = b.tool.label
+        if b.tool == Tool.CONDUCTOR:
+            tool += f"  ·  resistance {b.resistance:g}"
+        elif b.tool == Tool.BATTERY:
+            tool += f"  ·  EMF {b.emf:g}  ·  + side {b.orientation.name.lower()}"
+        elif b.tool == Tool.CHARGE:
+            tool += f"  ·  {b.charge:+g} e"
+        w = self.world
+        rows = [
+            ("Tool", tool),
+            ("Brush", f"radius {b.radius}"),
+            (
+                "World",
+                f"{plural(len(w.particles), 'electron')}"
+                f"  ·  {plural(w.connectivity.count, 'island')}"
+                f"  ·  {plural(len(w.fixed_charge), 'test charge')}",
+            ),
+        ]
+        conductive = w.materials.conductive
+        if conductive.any():
+            rows.append(("|E| in wires", f"{np.hypot(*e_grid[conductive].T).mean():.4f} (mean)"))
+        return rows
+
+    def cell_rows(self, col: int, row: int, e_grid: np.ndarray) -> list[tuple[str, str]]:
+        w, m = self.world, self.world.materials
+        potential = self.electric.potential_grid(w)
         kind = Material(m.kind[col, row])
-        fixed_cells = np.floor(self.world.fixed_pos).astype(int)
-        here = (fixed_cells[:, 0] == col) & (fixed_cells[:, 1] == row)
-        charge = f", test charge {self.world.fixed_charge[here][0]:+g} e" if here.any() else ""
-        if kind == Material.VACUUM:
-            return "vacuum" + charge
-        if kind == Material.BATTERY:
-            side = Orientation(m.orientation[col, row]).name.lower()
-            return f"battery, EMF {m.emf[col, row]:g}, + side {side}; " + self.describe_stack(
-                (col, row), potential
+        if kind == Material.CONDUCTOR:
+            cell_c, cell_r = w.particles.cells()
+            electrons = np.count_nonzero((cell_c == col) & (cell_r == row))
+            what = (
+                f"conductor  ·  resistance {m.resistance[col, row]:g}"
+                f"  ·  island {w.connectivity.labels[col, row]}  ·  {plural(electrons, 'electron')}"
             )
-        text = f"conductor, resistance {m.resistance[col, row]:g}"
-        cell_c, cell_r = self.world.particles.cells()
-        electrons = np.count_nonzero((cell_c == col) & (cell_r == row))
-        island = self.world.connectivity.labels[col, row]
-        return f"{text}, island {island}, {electrons} electron(s){charge}"
+        elif kind == Material.BATTERY:
+            side = Orientation(m.orientation[col, row]).name.lower()
+            what = f"battery  ·  EMF {m.emf[col, row]:g}  ·  + side {side}"
+        else:
+            what = "vacuum"
+        fixed_cells = np.floor(w.fixed_pos).astype(int)
+        here = (fixed_cells[:, 0] == col) & (fixed_cells[:, 1] == row)
+        if here.any():
+            what += f"  ·  test charge {w.fixed_charge[here][0]:+g} e"
+
+        ex, ey = e_grid[col, row]
+        rows = [(f"Cell {col},{row}", what)]
+        if kind == Material.BATTERY:
+            rows.append(("Stack", self.describe_stack((col, row), potential)))
+        rows += [
+            ("V", f"{potential[col, row]:+.3g}"),
+            ("E", f"({ex:+.3g}, {ey:+.3g})   |E| {np.hypot(ex, ey):.3g}"),
+        ]
+        if kind == Material.CONDUCTOR:
+            ix, iy = self.current[col, row]
+            rows.append(("I", f"({ix:+.3g}, {iy:+.3g})   |I| {np.hypot(ix, iy):.3g}"))
+        return rows
 
     def describe_stack(self, cell: tuple[int, int], potential: np.ndarray) -> str:
         stack = next(st for st in self.world.stacks if cell in st.cells)
         v_low = battery.terminal_potential(self.world, potential, stack.low)
         v_high = battery.terminal_potential(self.world, potential, stack.high)
         if v_low is None or v_high is None:
-            return f"stack EMF {abs(stack.emf):g}, not connected"
+            return f"EMF {abs(stack.emf):g}  ·  not connected"
         # Report from the stack's own + terminal, so both numbers come out positive.
         sign = 1 if stack.emf >= 0 else -1
         current = sign * self.world.pump_current.get(stack, 0.0)
         return (
-            f"stack EMF {abs(stack.emf):g}, terminal voltage {sign * (v_high - v_low):.3g},"
-            f" current {current:.3g}"
+            f"EMF {abs(stack.emf):g}  ·  terminals {sign * (v_high - v_low):.3g} V"
+            f"  ·  current {current:.3g}"
         )
 
     def update_caption(self) -> None:
@@ -270,6 +311,10 @@ class App:
             f"Embloks | {self.clock.get_fps():.0f} fps | t={self.sim_time:.2f} | {state}"
             f" | grid {self.grid.cols}x{self.grid.rows}"
         )
+
+
+def plural(count: int, noun: str) -> str:
+    return f"{count} {noun}" + ("" if count == 1 else "s")
 
 
 def main() -> None:

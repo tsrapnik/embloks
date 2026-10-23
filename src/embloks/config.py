@@ -101,4 +101,6 @@ class Settings:
 
     hud_font_size: int = 20
     hud_text_color: tuple[int, int, int] = (220, 220, 230)
-    hud_background: tuple[int, int, int, int] = (0, 0, 0, 160)
+    hud_label_color: tuple[int, int, int] = (130, 190, 255)
+    hud_rule_color: tuple[int, int, int] = (70, 70, 90)
+    hud_background: tuple[int, int, int, int] = (0, 0, 0, 175)
