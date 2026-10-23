@@ -16,14 +16,27 @@ pip install -e ".[dev]"
 python -m embloks      # or simply: embloks
 ```
 
-Run the tests with `pytest`.
+## Tests
+
+```bash
+pytest
+```
+
+Tests live in [tests/](tests/) and run without a display (`tests/conftest.py` selects SDL's dummy
+video driver). Configuration is the `[tool.pytest.ini_options]` section of `pyproject.toml`.
 
 ## Using the app
 
-| Key   | Action                  |
-|-------|-------------------------|
-| Space | Pause / resume physics  |
-| Esc   | Quit                    |
+| Key       | Action                                   |
+|-----------|------------------------------------------|
+| Space     | Pause / resume physics                   |
+| `+` / `-` | Finer / coarser grid (resets the scene)  |
+| Esc       | Quit                                     |
 
-The window title shows the frame rate, the simulation time and whether the simulation is paused.
-For now the canvas is empty; more features arrive with each build step.
+The canvas is divided into a grid of square cells. Hover the mouse over the grid to highlight a
+cell. The grid density (about how many columns fit across the window, 4 to 200) is set by
+`grid_density` in [src/embloks/config.py](src/embloks/config.py) and changed live with `+`/`-`.
+On very fine grids the grid lines are hidden so they don't drown out the canvas.
+
+The window title shows the frame rate, simulation time, paused state, grid size (columns x rows)
+and the hovered cell as (column, row).

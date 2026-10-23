@@ -1,6 +1,11 @@
 import pygame
 
+from embloks import render
 from embloks.config import Settings
+from embloks.grid import Grid
+
+DENSITY_UP_KEYS = {pygame.K_PLUS, pygame.K_EQUALS, pygame.K_KP_PLUS}
+DENSITY_DOWN_KEYS = {pygame.K_MINUS, pygame.K_KP_MINUS}
 
 
 class App:
@@ -13,10 +18,27 @@ class App:
         self.clock = pygame.time.Clock()
         self.running = True
         self.paused = False
+        self.hovered_cell: tuple[int, int] | None = None
+        self.reset_scene()
+
+    def reset_scene(self) -> None:
+        """Rebuild the grid at the current density and restart the simulation."""
+        s = self.settings
+        self.grid = Grid.fit(s.grid_density, s.window_width, s.window_height)
         self.sim_time = 0.0
         self.tick_count = 0
         # Real time not yet consumed by physics ticks.
         self._accumulator = 0.0
+
+    def change_density(self, factor: float) -> None:
+        s = self.settings
+        new = round(s.grid_density * factor)
+        if new == s.grid_density:
+            new += 1 if factor > 1 else -1
+        new = max(s.min_grid_density, min(s.max_grid_density, new))
+        if new != s.grid_density:
+            s.grid_density = new
+            self.reset_scene()
 
     def run(self) -> None:
         while self.running:
@@ -35,6 +57,11 @@ class App:
                     self.running = False
                 elif event.key == pygame.K_SPACE:
                     self.paused = not self.paused
+                elif event.key in DENSITY_UP_KEYS:
+                    self.change_density(self.settings.grid_density_step)
+                elif event.key in DENSITY_DOWN_KEYS:
+                    self.change_density(1 / self.settings.grid_density_step)
+        self.hovered_cell = self.grid.cell_at(*pygame.mouse.get_pos())
 
     def advance(self, frame_seconds: float) -> None:
         """Run as many fixed-size physics ticks as fit in the elapsed real time."""
@@ -59,10 +86,17 @@ class App:
 
     def render(self) -> None:
         self.screen.fill(self.settings.background_color)
+        render.draw_grid_lines(self.screen, self.grid, self.settings)
+        render.draw_hover(self.screen, self.grid, self.hovered_cell, self.settings)
         pygame.display.flip()
+        self.update_caption()
+
+    def update_caption(self) -> None:
         state = "paused" if self.paused else "running"
+        cell = "-" if self.hovered_cell is None else f"{self.hovered_cell}"
         pygame.display.set_caption(
             f"Embloks | {self.clock.get_fps():.0f} fps | t={self.sim_time:.2f} | {state}"
+            f" | grid {self.grid.cols}x{self.grid.rows} | cell {cell}"
         )
 
 
