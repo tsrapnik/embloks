@@ -157,3 +157,16 @@ def test_reported_current_is_the_charge_actually_moved_not_the_commanded_rate():
     before = w.pump_current[stack]
     battery.pump(w, potential, dt, s)
     assert w.pump_current[stack] == pytest.approx(before * (1 - alpha))
+
+
+def test_ac_stack_follows_a_sine_and_dc_stays_constant():
+    m = Materials(10, 6)
+    paint_battery(m, [(3, 2)], Orientation.RIGHT, emf=4)
+    m.paint(np.array([6]), np.array([2]), Material.BATTERY, emf=2, orientation=Orientation.LEFT,
+            frequency=0.25)
+    stacks = {s.cells[0]: s for s in battery.find_stacks(m, 0.1)}
+    dc, ac = stacks[(3, 2)], stacks[(6, 2)]
+    assert not dc.is_ac and dc.emf_at(0.0) == dc.emf_at(7.3) == 4
+    assert ac.is_ac and ac.emf == -2
+    assert ac.emf_at(1.0) == pytest.approx(-2)  # sin(2 pi * 0.25 * 1) = 1.
+    assert ac.emf_at(2.0) == pytest.approx(0, abs=1e-12)

@@ -36,6 +36,7 @@ class Brush:
     resistance_index: int = field(init=False)
     emf_index: int = field(init=False)
     charge_index: int = field(init=False)
+    frequency_index: int = 0
 
     def __post_init__(self):
         s = self.settings
@@ -50,6 +51,14 @@ class Brush:
     @property
     def emf(self) -> float:
         return self.settings.emf_values[self.emf_index]
+
+    @property
+    def frequency(self) -> float:
+        """Battery frequency: 0 is DC, otherwise AC cycles per time unit."""
+        return self.settings.ac_frequencies[self.frequency_index]
+
+    def step_frequency(self) -> None:
+        self.frequency_index = (self.frequency_index + 1) % len(self.settings.ac_frequencies)
 
     @property
     def charge(self) -> float:

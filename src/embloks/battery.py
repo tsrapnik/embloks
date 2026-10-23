@@ -31,13 +31,31 @@ class Stack:
     low: tuple[int, int]
     high: tuple[int, int]
     # Voltage the stack maintains: V(high) - V(low). Negative if it points towards low.
+    # For AC cells this is the amplitude.
     emf: float
     internal_resistance: float
+    # Per cell: (signed EMF, frequency). Frequency 0 is DC.
+    sources: tuple[tuple[float, float], ...] = ()
+
+    @property
+    def is_ac(self) -> bool:
+        return any(frequency > 0 for _, frequency in self.sources)
+
+    def emf_at(self, time: float) -> float:
+        """V(high) - V(low) the stack drives at `time`: AC cells follow EMF * sin(2 pi f t)."""
+        if not self.sources:
+            return self.emf
+        return sum(
+            emf if frequency == 0 else emf * np.sin(2 * np.pi * frequency * time)
+            for emf, frequency in self.sources
+        )
 
 
 def find_stacks(materials: Materials, resistance_per_cell: float) -> list[Stack]:
     """Group battery cells into stacks: runs along their own (shared) axis."""
-    kind, orientation, emf = materials.kind, materials.orientation, materials.emf
+    kind, orientation, emf, frequency = (
+        materials.kind, materials.orientation, materials.emf, materials.frequency
+    )
     horizontal = (orientation == Orientation.RIGHT) | (orientation == Orientation.LEFT)
 
     def in_run(cell: tuple[int, int], axis_horizontal: bool) -> bool:
@@ -67,9 +85,12 @@ def find_stacks(materials: Materials, resistance_per_cell: float) -> list[Stack]
         seen.update(cells)
         # RIGHT and DOWN point along +step; LEFT and UP against it.
         signs = [1 if orientation[x] in (Orientation.RIGHT, Orientation.DOWN) else -1 for x in cells]
-        total = float(sum(sign * emf[x] for sign, x in zip(signs, cells)))
+        sources = tuple((float(sign * emf[x]), float(frequency[x])) for sign, x in zip(signs, cells))
+        total = sum(signed for signed, _ in sources)
         low = (first[0] - step[0], first[1] - step[1])
-        stacks.append(Stack(tuple(cells), low, cell, total, resistance_per_cell * len(cells)))
+        stacks.append(
+            Stack(tuple(cells), low, cell, total, resistance_per_cell * len(cells), sources)
+        )
     return stacks
 
 
@@ -89,17 +110,17 @@ def terminal_potential(world, potential: np.ndarray, cell: tuple[int, int]) -> f
     return float(potential[c0:c1, r0:r1][same_island].mean())
 
 
-def pump(world, potential: np.ndarray, dt: float, settings: Settings) -> None:
-    """Run every battery stack for dt, moving electrons between its terminals."""
+def pump(world, potential: np.ndarray, dt: float, settings: Settings, time: float = 0.0) -> None:
+    """Run every battery stack for dt at simulation `time`, moving electrons between terminals."""
     p = world.particles
     for stack in world.stacks:
         v_low = terminal_potential(world, potential, stack.low)
         v_high = terminal_potential(world, potential, stack.high)
         if v_low is None or v_high is None:
-            world.pump_charge.pop(stack, None)
-            world.pump_current.pop(stack, None)
+            for state in (world.pump_charge, world.pump_current, world.pump_flow):
+                state.pop(stack, None)
             continue
-        current = (stack.emf - (v_high - v_low)) / stack.internal_resistance
+        current = (stack.emf_at(time) - (v_high - v_low)) / stack.internal_resistance
         # Positive current = conventional current low -> high inside the battery,
         # i.e. electrons taken at the high terminal and delivered at the low one.
         owed = world.pump_charge.get(stack, 0.0) + current * dt
@@ -117,23 +138,28 @@ def pump(world, potential: np.ndarray, dt: float, settings: Settings) -> None:
         # The battery's current is the charge it actually moved, smoothed like wire
         # currents. (The commanded rate above swings wildly between single-electron
         # transfers and is not a current.)
-        alpha = min(1.0, dt / settings.current_smoothing_time)
-        previous = world.pump_current.get(stack, 0.0)
-        world.pump_current[stack] = previous + alpha * (moved / dt - previous)
+        for state, smoothing in (
+            (world.pump_current, settings.current_smoothing_time),
+            (world.pump_flow, settings.battery_flow_time),
+        ):
+            alpha = min(1.0, dt / smoothing)
+            previous = state.get(stack, 0.0)
+            state[stack] = previous + alpha * (moved / dt - previous)
         if len(p) == 0:
             break
 
 
-def current_grid(world) -> np.ndarray:
+def current_grid(world, fast: bool = False) -> np.ndarray:
     """The batteries' internal currents as a current density, shape (cols, rows, 2).
 
     Pumped electrons jump across a battery instead of moving through it, so they
-    carry no velocity; this puts the (smoothed) pump current back along the
-    stack's cells, closing the current loop for magnetic fields.
+    carry no velocity; this puts the pump current back along the stack's cells,
+    closing the current loop for magnetic fields. `fast` uses the briefly averaged
+    flow (for physics) instead of the display-averaged current.
     """
     m = world.materials
     grid = np.zeros((m.cols, m.rows, 2))
-    for stack, current in world.pump_current.items():
+    for stack, current in (world.pump_flow if fast else world.pump_current).items():
         # Positive current flows from the low terminal towards the high one.
         direction = np.sign(np.subtract(stack.high, stack.low))
         for cell in stack.cells:

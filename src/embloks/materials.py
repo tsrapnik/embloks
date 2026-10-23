@@ -43,6 +43,8 @@ class Materials:
         # Only meaningful for batteries.
         self.emf = np.zeros((cols, rows))
         self.orientation = np.zeros((cols, rows), dtype=np.int8)
+        # AC frequency (cycles per time unit); 0 is a DC battery.
+        self.frequency = np.zeros((cols, rows))
         # Bumped on every change, so caches (rendering, physics) know when to rebuild.
         self.version = 0
 
@@ -60,6 +62,7 @@ class Materials:
         resistance: float = 0.0,
         emf: float = 0.0,
         orientation: Orientation = Orientation.RIGHT,
+        frequency: float = 0.0,
     ) -> None:
         """Set the given cells to `material`, clearing properties it doesn't use."""
         self.kind[cols, rows] = material
@@ -67,6 +70,7 @@ class Materials:
         is_battery = material == Material.BATTERY
         self.emf[cols, rows] = emf if is_battery else 0.0
         self.orientation[cols, rows] = orientation if is_battery else 0
+        self.frequency[cols, rows] = frequency if is_battery else 0.0
         self.version += 1
 
     def clear(self) -> None:

@@ -118,3 +118,18 @@ def test_empty_or_incompatible_slots_give_a_message(app, tmp_path):
     np.savez(tmp_path / "slot6.npz", **arrays)
     press(app, pygame.K_6, pygame.KMOD_LSHIFT)
     assert "Could not load" in app.message
+
+
+def test_dynamic_mode_and_ac_frequency_survive_save_and_load(app, tmp_path):
+    app.load_scene(6)  # Antenna: dynamic fields, AC source.
+    for _ in range(10):
+        app.step(app.settings.dt)
+    frequency = app.world.materials.frequency.copy()
+    storage.save(app, tmp_path / "antenna.npz")
+    app.load_scene(0)  # Instant fields, DC.
+    storage.load(app, tmp_path / "antenna.npz")
+    assert app.settings.dynamic_fields and app.maxwell is not None
+    np.testing.assert_array_equal(app.world.materials.frequency, frequency)
+    assert app.world.stacks[0].is_ac
+    for _ in range(10):
+        app.step(app.settings.dt)

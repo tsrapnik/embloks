@@ -7,9 +7,10 @@ import pygame
 
 from embloks import battery, physics, render, scenes, storage
 from embloks.config import Settings
-from embloks.fields import ElectricField, MagneticField, poynting
+from embloks.fields import CloudInCell, ElectricField, MagneticField, poynting
 from embloks.grid import Grid
 from embloks.layers import Layer, LayerPanel
+from embloks.maxwell import Maxwell
 from embloks.materials import Material, Orientation
 from embloks.ui import Brush, Tool, line_cells
 from embloks.world import World
@@ -37,6 +38,8 @@ KEY_HELP = [
     ("1  2  3", "tool: conductor / battery / test charge"),
     ("Up  Down", "tool value: resistance / EMF / charge"),
     ("R", "rotate battery"),
+    ("F", "battery frequency: DC or AC"),
+    ("M", "field mode: instant / dynamic (Maxwell: induction, waves)"),
     ("[  ]  wheel", "brush size"),
     ("E  B  S  P", "show E arrows / B colours / S arrows / particles"),
     ("L", "layers panel (top right): show, scale, opacity, log/linear"),
@@ -45,7 +48,8 @@ KEY_HELP = [
     ("+  -", "grid density (clears)"),
     ("C", "clear all"),
     ("Ctrl / Shift + 0-9", "save to / load from slot"),
-    ("F1 - F5", "example scenes: battery + resistor / screening / series / capacitor / parallel"),
+    ("F1 - F7", "examples: battery + resistor / screening / series / capacitor / parallel /"
+                " transformer / antenna"),
     ("H", "panel: full / status only / hidden"),
 ]
 PAINT_BUTTON = 1
@@ -105,11 +109,13 @@ class App:
         self._stroke_cell: tuple[int, int] | None = None
         # Whether the current erase stroke removes test charges instead of materials.
         self._erase_charges = False
-        # Time-averaged E for display, the simulation time it was last updated, and
-        # what the static charges looked like then (painting resets the average).
-        self._e_display: np.ndarray | None = None
-        self._e_display_time = 0.0
-        self._e_display_key = None
+        # Time-averaged E and B for display, the simulation time they were last updated,
+        # and what the static charges looked like then (painting resets the averages).
+        self._display: dict[str, np.ndarray] = {}
+        self._display_time = 0.0
+        self._display_key = None
+        # Time-stepped fields in dynamic mode (None: instant fields).
+        self.maxwell = self.make_maxwell() if s.dynamic_fields else None
 
     def change_density(self, factor: float) -> None:
         s = self.settings
@@ -225,6 +231,10 @@ class App:
         elif key in LAYER_KEYS:
             layer = self.layers[LAYER_KEYS[key]]
             layer.visible = not layer.visible
+        elif key == pygame.K_m:
+            self.toggle_dynamic_fields()
+        elif key == pygame.K_f:
+            brush.step_frequency()
         elif key == pygame.K_l:
             self.layer_panel.visible = not self.layer_panel.visible
         elif key in SLOWER_KEYS | FASTER_KEYS:
@@ -266,7 +276,9 @@ class App:
         elif b.tool == Tool.CHARGE:
             self.world.place_charges(cols, rows, b.charge)
         else:
-            self.world.paint(cols, rows, b.tool.material, b.resistance, b.emf, b.orientation)
+            self.world.paint(
+                cols, rows, b.tool.material, b.resistance, b.emf, b.orientation, b.frequency
+            )
         self._stroke_cell = cell
 
     def advance(self, frame_seconds: float) -> None:
@@ -285,34 +297,67 @@ class App:
             # Falling behind: drop the backlog instead of trying to catch up.
             self._accumulator = 0.0
 
+    def make_maxwell(self) -> Maxwell:
+        """Dynamic fields for the current world, starting from rest (only static E)."""
+        w, m = self.world, self.world.materials
+        maxwell = Maxwell(m.cols, m.rows, self.settings)
+        maxwell.enforce_gauss(maxwell.charge(w, CloudInCell(w.particles.pos, m.cols, m.rows)))
+        return maxwell
+
+    def toggle_dynamic_fields(self) -> None:
+        s = self.settings
+        s.dynamic_fields = not s.dynamic_fields
+        self.maxwell = self.make_maxwell() if s.dynamic_fields else None
+        self._display = {}
+        if s.dynamic_fields:
+            self.show_message(f"Dynamic fields: Maxwell's equations in 2D, light speed "
+                              f"{s.speed_of_light:g} cells per time unit")
+        else:
+            self.show_message("Instant fields: Coulomb and Biot-Savart, no induction or waves")
+
+    def potential_grid(self) -> np.ndarray:
+        """Electric potential at the cell centres in the current field mode."""
+        if self.maxwell is not None:
+            return self.maxwell.visible_potential()
+        return self.electric.potential_grid(self.world)
+
     def step(self, dt: float) -> None:
         s = self.settings
-        battery.pump(self.world, self.electric.potential_grid(self.world), dt, s)
-        physics.step(self.world, self.electric, dt, s)
+        battery.pump(self.world, self.potential_grid(), dt, s, self.sim_time)
+        physics.step(self.world, self.electric, dt, s, self.maxwell)
         alpha = min(1.0, dt / s.current_smoothing_time)
         self.current += alpha * (physics.current_density(self.world) - self.current)
         self.sim_time += dt
         self.tick_count += 1
 
-    def display_e_field(self) -> np.ndarray:
-        """E on the grid, averaged over display_smoothing_time of simulated time.
+    def display_fields(self) -> tuple[np.ndarray, np.ndarray]:
+        """E and B on the grid, averaged over display_smoothing_time of simulated time.
 
         The average advances with simulated time, so it holds still while paused.
-        It restarts from the instantaneous field whenever charges are painted,
-        so edits show up immediately even while paused.
+        It restarts from the instantaneous fields whenever charges are painted or the
+        field mode changes, so edits show up immediately even while paused.
         """
-        e = self.electric.grid(self.world)
-        w = self.world
-        key = (id(w), w.materials.version, w.fixed_version)
-        tau = self.settings.display_smoothing_time
-        if self._e_display is None or key != self._e_display_key or tau <= 0:
-            self._e_display = e
+        if self.maxwell is not None:
+            e, b = self.maxwell.node_fields()
         else:
-            alpha = 1 - np.exp(-(self.sim_time - self._e_display_time) / tau)
-            self._e_display = self._e_display + alpha * (e - self._e_display)
-        self._e_display_key = key
-        self._e_display_time = self.sim_time
-        return self._e_display
+            e = self.electric.grid(self.world)
+            # B from the averaged current: instantaneous electron jitter would flicker.
+            b = self.magnetic.grid(self.world, self.current + battery.current_grid(self.world))
+        w = self.world
+        key = (id(w), w.materials.version, w.fixed_version, self.maxwell is None)
+        tau = self.settings.display_smoothing_time
+        if not self._display or key != self._display_key or tau <= 0:
+            self._display = {"E": e, "B": b}
+        else:
+            alpha = 1 - np.exp(-(self.sim_time - self._display_time) / tau)
+            for name, value in (("E", e), ("B", b)):
+                self._display[name] = self._display[name] + alpha * (value - self._display[name])
+        self._display_key = key
+        self._display_time = self.sim_time
+        return self._display["E"], self._display["B"]
+
+    def display_e_field(self) -> np.ndarray:
+        return self.display_fields()[0]
 
     def render(self) -> None:
         s, layers = self.settings, self.layers
@@ -320,12 +365,10 @@ class App:
         self.material_layer.draw(
             self.screen, self.grid, self.world.materials, s, show_ions=layers["P"].visible
         )
-        # Display B from the smoothed current: instantaneous electron jitter would flicker.
-        b_grid = self.magnetic.grid(self.world, self.current + battery.current_grid(self.world))
+        e_grid, b_grid = self.display_fields()
         if layers["B"].visible:
             render.draw_magnetic_field(self.screen, self.grid, b_grid, s, layers["B"])
         render.draw_grid_lines(self.screen, self.grid, s)
-        e_grid = self.display_e_field()
         s_grid = poynting(e_grid, b_grid, s)
         cells = render.arrow_sample_cells(self.grid, s)
         if layers["E"].visible:
@@ -375,7 +418,8 @@ class App:
         if b.tool == Tool.CONDUCTOR:
             tool += f"  ·  resistance {b.resistance:g}"
         elif b.tool == Tool.BATTERY:
-            tool += f"  ·  EMF {b.emf:g}  ·  + side {b.orientation.name.lower()}"
+            tool += f"  ·  EMF {b.emf:g}  ·  {describe_frequency(b.frequency)}"
+            tool += f"  ·  + side {b.orientation.name.lower()}"
         elif b.tool == Tool.CHARGE:
             tool += f"  ·  {b.charge:+g} e"
         w = self.world
@@ -388,6 +432,8 @@ class App:
             ("Tool", tool),
             ("Brush", f"radius {b.radius}"),
             ("Speed", f"{self.sim_speed:g}× (simulated time per second)" + ("  ·  PAUSED" if self.paused else "")),
+            ("Fields", f"dynamic: Maxwell, light speed {self.settings.speed_of_light:g}"
+             if self.maxwell is not None else "instant: Coulomb + Biot-Savart"),
             (
                 "World",
                 f"{plural(len(w.particles), 'electron')}"
@@ -405,7 +451,7 @@ class App:
         self, col: int, row: int, e_grid: np.ndarray, b_grid: np.ndarray, s_grid: np.ndarray
     ) -> list[tuple[str, str]]:
         w, m = self.world, self.world.materials
-        potential = self.electric.potential_grid(w)
+        potential = self.potential_grid()
         kind = Material(m.kind[col, row])
         if kind == Material.CONDUCTOR:
             cell_c, cell_r = w.particles.cells()
@@ -416,7 +462,8 @@ class App:
             )
         elif kind == Material.BATTERY:
             side = Orientation(m.orientation[col, row]).name.lower()
-            what = f"battery  ·  EMF {m.emf[col, row]:g}  ·  + side {side}"
+            what = (f"battery  ·  EMF {m.emf[col, row]:g}  ·  "
+                    f"{describe_frequency(m.frequency[col, row])}  ·  + side {side}")
         else:
             what = "vacuum"
         fixed_cells = np.floor(w.fixed_pos).astype(int)
@@ -472,13 +519,15 @@ class App:
         stack = next(st for st in self.world.stacks if cell in st.cells)
         v_low = battery.terminal_potential(self.world, potential, stack.low)
         v_high = battery.terminal_potential(self.world, potential, stack.high)
+        kind = "AC amplitude" if stack.is_ac else "EMF"
         if v_low is None or v_high is None:
-            return f"EMF {abs(stack.emf):g}  ·  not connected"
+            return f"{kind} {abs(stack.emf):g}  ·  not connected"
         # Report from the stack's own + terminal, so both numbers come out positive.
         sign = 1 if stack.emf >= 0 else -1
         voltage = self.cell_readout("terminal V", sign * (v_high - v_low))
         current = self.cell_readout("battery I", sign * self.world.pump_current.get(stack, 0.0))
-        return f"EMF {abs(stack.emf):g}  ·  terminals {number(voltage)} V  ·  current {number(current)}"
+        return (f"{kind} {abs(stack.emf):g}  ·  terminals {number(voltage)} V"
+                f"  ·  current {number(current)}")
 
     def update_caption(self) -> None:
         state = "paused" if self.paused else "running"
@@ -553,6 +602,10 @@ def number(value: float, signed: bool = True) -> str:
     if magnitude == 0 or 1e-3 <= magnitude < 1e3:
         return f"{value:{sign}.4f}"
     return f"{value:{sign}.2e}"
+
+
+def describe_frequency(frequency: float) -> str:
+    return "DC" if frequency == 0 else f"AC {frequency:g} cycles/time"
 
 
 def plural(count: int, noun: str) -> str:

@@ -69,14 +69,30 @@ class Settings:
     # Internal resistance per battery cell. A perfect battery would have 0; a small value
     # keeps the pump from overshooting: it moves charge at (EMF - V) / resistance.
     battery_resistance: float = 0.1
-    # Displayed currents (and the battery currents that feed B) are averaged over roughly
-    # this much simulation time, like an ammeter's response time.
+    # The battery current the fields see is averaged over only this long: long enough
+    # to smooth single-electron transfers, short enough to follow an AC source.
+    battery_flow_time: float = 0.2
+    # AC frequencies (cycles per time unit) the battery tool steps through with F; 0 is DC.
+    ac_frequencies: tuple[float, ...] = (0, 0.02, 0.05, 0.1, 0.2)
+    # Displayed currents (wires and batteries) are averaged over roughly this much
+    # simulation time, like an ammeter's response time.
     current_smoothing_time: float = 2.0
     # Fraction of normal velocity kept when an electron bounces off a closed cell face.
     wall_restitution: float = 0.3
     # Largest move (cells) per substep, and the cap on substeps per tick.
     max_step: float = 0.4
     max_substeps: int = 16
+
+    # Dynamic fields (M key): Maxwell's equations stepped in time instead of instant fields.
+    dynamic_fields: bool = False
+    # Width (cells) of the absorbing layer around the visible grid in dynamic mode, and
+    # how strongly it damps (per time unit, at its outer edge; it ramps up gradually).
+    absorbing_margin: int = 16
+    # Passes of a 1-2-1 smoothing filter applied to charge and current in dynamic mode:
+    # its counterpart of the softening length. Two passes (~1 cell) make a DC circuit
+    # carry the same current as in instant mode; fewer starve thin wires.
+    dynamic_smoothing_passes: int = 2
+    absorbing_strength: float = 3.0
 
     # Coulomb constant 1/(4 pi eps0).
     coulomb_k: float = 1.0

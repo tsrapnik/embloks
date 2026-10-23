@@ -1,11 +1,11 @@
-"""Built-in example scenes, loaded with F1-F5.
+"""Built-in example scenes, loaded with F1-F7.
 
 Each scene is built from code: it resets physics settings and display layers to
 their defaults, paints materials and test charges, then sets the layers that
 show its point best. Scenes start from rest, so you see them settle.
 """
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Callable
 
 import numpy as np
@@ -27,6 +27,10 @@ class Scene:
     # Layer id -> attributes to set after resetting all layers to defaults.
     layers: dict[str, dict]
     sim_speed: float = 8
+    # Needs dynamic fields (Maxwell: induction, waves) rather than instant ones.
+    dynamic: bool = False
+    # Physics settings that differ from the defaults for this scene.
+    settings: dict = field(default_factory=dict)
 
 
 def outline(c0: int, c1: int, r0: int, r1: int) -> tuple[np.ndarray, np.ndarray]:
@@ -101,6 +105,35 @@ def parallel_paths(world: World) -> None:
         world.paint(*line(12, 27, *rows), Material.CONDUCTOR, resistance=2)
 
 
+def transformer(world: World) -> None:
+    """A big AC-driven loop with a smaller loop inside it, closed through a resistor.
+
+    In 2D a current loop is a long solenoid: its field is uniform inside and zero
+    outside, so a transformer's coils must be nested. The inner loop catches the
+    fraction of the outer loop's changing flux equal to its share of the area.
+    """
+    world.paint(*outline(4, 35, 4, 27), Material.CONDUCTOR, resistance=0.1)
+    # Two sources on opposite sides, both driving the same way round: the outer loop's
+    # charge then swings as a quadrupole, whose electric field is weak in the middle,
+    # so the inner loop is driven by induction rather than by being charged up.
+    world.paint(*line(4, 4, 15, 15), Material.BATTERY, emf=5, orientation=Orientation.UP,
+                frequency=0.02)
+    world.paint(*line(35, 35, 16, 16), Material.BATTERY, emf=5, orientation=Orientation.DOWN,
+                frequency=0.02)
+    world.paint(*outline(12, 27, 10, 21), Material.CONDUCTOR, resistance=0.1)
+    world.paint(*line(27, 27, 13, 18), Material.CONDUCTOR, resistance=2)
+
+
+def antenna(world: World) -> None:
+    """A half-wave dipole driven at its centre, and an identical receiver one wavelength away."""
+    # c = 2 cells per time unit and f = 0.1 per time unit: wavelength 20 cells.
+    world.paint(*line(9, 9, 11, 21), Material.CONDUCTOR, resistance=0.1)
+    world.paint(*line(9, 9, 16, 16), Material.BATTERY, emf=10, orientation=Orientation.UP,
+                frequency=0.1)
+    world.paint(*line(29, 29, 11, 21), Material.CONDUCTOR, resistance=0.1)
+    world.paint(*line(29, 29, 16, 16), Material.CONDUCTOR, resistance=2)
+
+
 SCENES = [
     Scene(
         "Battery and resistor",
@@ -133,6 +166,26 @@ SCENES = [
         40, parallel_paths,
         {"S": {"visible": False}},
     ),
+    Scene(
+        "Transformer",
+        "the inner loop has no source: the outer loop's changing magnetic flux drives the "
+        "current through its resistor (press M for instant fields: it stops)",
+        40, transformer,
+        {"E": {"visible": False}},
+        # A faster light speed shrinks the loops' inductance (L ~ 1/c^2 in 2D), so a real
+        # current flows round them; one AC period then takes about 3 seconds at 16x.
+        sim_speed=16,
+        dynamic=True,
+        settings={"speed_of_light": 8.0},
+    ),
+    Scene(
+        "Antenna",
+        "the left wire radiates waves at light speed; the right one, a wavelength away, "
+        "picks them up (hover its middle: Wire I)",
+        40, antenna,
+        {"S": {"visible": True}, "E": {"visible": False}},
+        dynamic=True,
+    ),
 ]
 
 
@@ -142,6 +195,9 @@ def load_scene(app, scene: Scene) -> None:
     for name in PHYSICS_SETTINGS:
         setattr(app.settings, name, getattr(defaults, name))
     app.settings.grid_density = scene.density
+    app.settings.dynamic_fields = scene.dynamic
+    for name, value in scene.settings.items():
+        setattr(app.settings, name, value)
     app.reset_scene()
     scene.build(app.world)
     app.reset_layers()

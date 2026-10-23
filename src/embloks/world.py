@@ -28,6 +28,9 @@ class World:
         # and smoothed current, for display.
         self.pump_charge: dict[Stack, float] = {}
         self.pump_current: dict[Stack, float] = {}
+        # The same pumped charge per time, averaged only briefly: the battery current the
+        # fields see (the slow average would lag an AC source by much of a period).
+        self.pump_flow: dict[Stack, float] = {}
         self._update_structure()
         # Fixed test charges, at most one per cell, at cell centres.
         self.fixed_pos = np.empty((0, 2))
@@ -52,10 +55,11 @@ class World:
         resistance: float = 0.0,
         emf: float = 0.0,
         orientation: Orientation = Orientation.RIGHT,
+        frequency: float = 0.0,
     ) -> None:
         was_conductive = self.materials.conductive
         old_labels = self.connectivity.labels
-        self.materials.paint(cols, rows, material, resistance, emf, orientation)
+        self.materials.paint(cols, rows, material, resistance, emf, orientation, frequency)
         self._update_structure()
 
         is_conductive = self.materials.conductive
@@ -87,7 +91,7 @@ class World:
         distances = self.connectivity.distances_from(terminals)
         self.terminal_distance = dict(zip(terminals, distances))
         # Forget pump state of stacks that no longer exist.
-        for state in (self.pump_charge, self.pump_current):
+        for state in (self.pump_charge, self.pump_current, self.pump_flow):
             for stack in set(state) - set(self.stacks):
                 del state[stack]
 

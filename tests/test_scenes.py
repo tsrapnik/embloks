@@ -132,3 +132,71 @@ def test_parallel_paths_split_the_current_by_resistance(app):
     thin_a, thin_b, wide = (abs(np.mean(x)) for x in (thin_a, thin_b, wide))
     assert thin_a == pytest.approx(thin_b, rel=0.15)
     assert wide / ((thin_a + thin_b) / 2) == pytest.approx(2, rel=0.2)
+
+
+def sine_fit(t, x, frequency):
+    """Amplitude and phase (degrees) of the component of x at `frequency`."""
+    basis = np.stack([np.sin(2 * np.pi * frequency * t), np.cos(2 * np.pi * frequency * t),
+                      np.ones_like(t)], axis=1)
+    (s, c, _), *_ = np.linalg.lstsq(basis, x, rcond=None)
+    return np.hypot(s, c), np.degrees(np.arctan2(c, s))
+
+
+def record(app, seconds, probes):
+    t, data = [], {name: [] for name in probes}
+    for _ in range(int(seconds / app.settings.dt)):
+        app.step(app.settings.dt)
+        t.append(app.sim_time)
+        current = physics.current_density(app.world)
+        for name, probe in probes.items():
+            data[name].append(probe(current))
+    return np.array(t), {name: np.array(v) for name, v in data.items()}
+
+
+def test_transformer_drives_the_inner_loop_by_induction_only(app):
+    probes = {
+        # Primary: mean tangential current over three sides (one loop current).
+        "primary": lambda j: (j[10:30, 4, 0].mean() + j[35, 8:24, 1].mean() - j[10:30, 27, 0].mean()) / 3,
+        "load": lambda j: j[27, 13:19, 1].mean(),  # Through the inner loop's resistor.
+    }
+    results = {}
+    for dynamic in (True, False):
+        app.load_scene(5)
+        app.world.rng = np.random.default_rng(0)
+        if not dynamic:
+            app.toggle_dynamic_fields()
+        run(app, 60)
+        t, data = record(app, 100, probes)
+        results[dynamic] = {name: sine_fit(t, x, 0.02) for name, x in data.items()}
+    load_dynamic, load_instant = results[True]["load"][0], results[False]["load"][0]
+    assert load_dynamic > 5 * load_instant  # No induction, no current through the load.
+    # Faraday + Lenz with a resistive load: I_load ~ -dI_primary/dt, i.e. 90 degrees behind.
+    lag = (results[True]["load"][1] - results[True]["primary"][1] + 180) % 360 - 180
+    assert lag == pytest.approx(-90, abs=40)
+
+
+def test_antenna_radiates_waves_that_the_receiver_picks_up(app):
+    frequency, columns = 0.1, list(range(12, 27, 2))
+    results = {}
+    for dynamic in (True, False):
+        app.load_scene(6)
+        app.world.rng = np.random.default_rng(0)
+        if not dynamic:
+            app.toggle_dynamic_fields()
+        run(app, 30)
+        t, fields, receiver = [], {x: [] for x in columns}, []
+        for _ in range(int(30 / app.settings.dt)):
+            app.step(app.settings.dt)
+            t.append(app.sim_time)
+            e = app.display_fields()[0] if dynamic else app.electric.grid(app.world)
+            for x in columns:
+                fields[x].append(e[x, 16, 1])
+            receiver.append(physics.current_density(app.world)[29, 15:18, 1].mean())
+        t = np.array(t)
+        phases = np.unwrap(np.radians([sine_fit(t, np.array(fields[x]), frequency)[1] for x in columns]))
+        results[dynamic] = (np.polyfit(columns, phases, 1)[0], sine_fit(t, np.array(receiver), frequency)[0])
+    wave = 2 * np.pi * frequency / app.settings.speed_of_light
+    # A travelling wave's phase falls with distance; an instant field's does not.
+    assert results[True][0] == pytest.approx(-wave, rel=0.35)
+    assert abs(results[False][0]) < 0.05
+    assert results[True][1] > 3 * results[False][1]

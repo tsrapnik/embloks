@@ -34,11 +34,13 @@ video driver). Configuration is the `[tool.pytest.ini_options]` section of `pypr
 | `1` / `2` / `3`     | Tool: conductor / battery / test charge                       |
 | Up / Down           | Tool value: resistance / EMF / charge                         |
 | `R`                 | Rotate battery orientation (clockwise)                        |
+| `F`                 | Battery frequency: DC, or AC at 0.02-0.2 cycles per time unit |
+| `M`                 | Field mode: instant / dynamic (induction and waves)           |
 | `[` / `]` or wheel  | Smaller / larger brush                                        |
 | `C`                 | Clear the canvas                                              |
 | Ctrl + `0`-`9`      | Save the scene to a slot                                      |
 | Shift + `0`-`9`     | Load the scene from a slot                                    |
-| `F1` - `F5`         | Load an example scene (see *Example scenes*)                  |
+| `F1` - `F7`         | Load an example scene (see *Example scenes*)                  |
 | `P`                 | Hide / show particles (ions and electrons)                    |
 | `E`                 | Hide / show electric field arrows                             |
 | `B`                 | Hide / show magnetic field colours                            |
@@ -194,7 +196,7 @@ dissipates (about 1/6 in a quick check).
 
 ### Example scenes
 
-`F1`-`F5` load ready-made scenes. Each starts from rest, so you watch it settle. Each resets the
+`F1`-`F7` load ready-made scenes. Each starts from rest, so you watch it settle. Each resets the
 physics settings and display layers to their defaults, then shows the layers that suit it.
 
 - **F1 Battery and resistor**: the textbook circuit. A rectangular loop of low-resistance wire,
@@ -216,6 +218,15 @@ physics settings and display layers to their defaults, then shows the layers tha
   read **Wire I** in the info panel (the current per cell, *I*, is the same in all three: the
   wide one just has twice as many cells side by side). The resistors are 2 and 4 cells wide
   rather than 1 and 2, because one-cell wires are the least accurate (see *Batteries*).
+- **F6 Transformer** (dynamic fields): a big loop driven by two AC sources, and a smaller loop
+  inside it with only a resistor. The inner loop's current is induced by the outer loop's
+  changing magnetic flux: it lags the outer current by a quarter period (it follows -dI/dt,
+  Lenz's law), and its flux visibly cancels part of the field inside it (darker colour). Press
+  `M` for instant fields and the current through its resistor stops.
+- **F7 Antenna** (dynamic fields): a half-wave wire antenna driven at its middle, and an
+  identical receiver one wavelength away with a resistor in its middle. B colours show the waves
+  spreading at light speed; the green S arrows point outwards (radiated energy). Hover the
+  receiver's middle and read *Wire I*; with `M` (instant fields) it drops ~7x.
 
 Save your own variations to a slot with Ctrl + digit.
 
@@ -258,6 +269,38 @@ The E arrows (and S, which uses E) are averaged over about half a time unit of s
 holds still while paused, and restarts from the exact field whenever you paint, so edits show
 up immediately. B is drawn from the averaged current for the same reason. The physics always
 uses the exact, instantaneous fields.
+
+### Dynamic fields: induction and waves
+
+By default fields are **instant**: Coulomb's law and the Biot-Savart law, recomputed from where
+the charges are right now. That covers circuits, screening and magnetic fields of steady
+currents, but a *changing* magnetic field creates no electric field, and nothing travels at a
+finite speed. `M` switches to **dynamic fields**: Maxwell's equations stepped forward in time,
+as in plasma physics particle-in-cell codes. You then also get:
+
+- **Induction**: a changing magnetic flux drives currents (transformers, F6), and every loop has
+  self-inductance, so AC currents lag and big loops resist fast changes.
+- **Waves**: changes in the currents spread outward at the speed of light (`speed_of_light`,
+  2 cells per time unit by default) and carry energy away (antennas, F7).
+
+Use **AC sources** to see it: with the battery tool, `F` steps the frequency from DC through
+0.02-0.2 cycles per time unit; the EMF then follows `EMF·sin(2πft)`. A wire whose length is half
+the wavelength `speed_of_light / frequency` makes a good antenna.
+
+This mode is genuine **2D electromagnetism**: everything is uniform out of the screen, so a
+"charge" is really an infinitely long line of charge. Two consequences:
+
+- Static fields fall off as 1/r instead of 1/r², a bit further reaching than in instant mode.
+  DC circuits still carry the same currents in both modes (checked by the tests).
+- A current loop in the plane is really an infinitely long **solenoid**: its magnetic field is
+  uniform inside and zero outside, and its inductance is μ0 × area, which is large. A transformer
+  therefore needs one loop *inside* the other (side by side they share no flux). The secondary
+  voltage is set by the fraction of the primary's area it encloses. The transformer scene uses a
+  faster light speed (8), which makes the inductance 16x smaller, so a real current flows round
+  the loops instead of just charging them up.
+
+Switching modes starts the dynamic fields from rest (only the electrostatic part), and the
+fields themselves aren't saved: a loaded scene starts them from rest too.
 
 ### Simulation speed
 
@@ -316,7 +359,7 @@ the cell under the mouse it shows:
 
 - the material, island number and electron count (or the battery's stack details),
 - the electric potential **V**, field **E**, magnetic field **B** and energy flow **S** at
-  its centre,
+  its centre (from the current field mode, shown in the status as *Fields*),
 - for conductors, the **current** through it: conventional current (the direction positive
   charge would flow, opposite to the electrons), averaged over 2 time units
   (`current_smoothing_time`), like an ammeter's response time. **I** is the current through
@@ -386,6 +429,17 @@ The window title shows the frame rate, simulation time, paused state and grid si
   go through an overlay. Electrons are one pre-drawn dot sprite blitted in a single batched
   call, or single pixels written into the screen array when there are very many. On fine grids
   only every n-th cell gets a field arrow.
+- **Dynamic fields (FDTD).** E and B live on a staggered (Yee) grid: Ex and Ey on cell edges,
+  B on cell corners, stepped with Faraday's and Ampère's laws in a leapfrog. After every step E is
+  corrected so that Gauss's law holds exactly (divergence cleaning, solved with a sine transform);
+  the electrostatic part is thereby instantaneous, as in the Coulomb gauge, and only fields of
+  changing currents travel at c. That also keeps the fields right when charge jumps without a
+  current (painting, battery transfers). A 16-cell margin with gradually rising damping absorbs
+  outgoing waves. Electrons read each field component from its own staggered position: averaging
+  onto cell centres first would hide an odd/even checkerboard of charge from them, which then
+  grows unchecked. Charge and current pass through a 1-2-1 smoothing filter (twice), dynamic
+  mode's counterpart of the softening length. If light would cross more than ~0.6 cell per
+  tick, the field step is split into substeps (the CFL stability limit).
 - **Large time step.** Drag is stable at any step and the electron motion is smooth, so a tick
   can cover 1/30 time unit; results were checked to be identical up to 1/8.
 

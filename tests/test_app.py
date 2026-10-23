@@ -296,3 +296,14 @@ def test_readout_columns_do_not_move_when_values_change(app):
         right_edges = [x + w for w, x in blits[3:5]]  # Ex and Ey numbers.
         layouts.append((right_edges, blits[5][1], blits[1][1] + blits[1][0]))
     assert layouts[0] == layouts[1]  # Same right edges, "|E|" position and V position.
+
+
+def test_f_cycles_the_battery_frequency_and_paints_it(app):
+    press(app, pygame.K_2)
+    press(app, pygame.K_f)
+    assert app.brush.frequency == app.settings.ac_frequencies[1] > 0
+    click(app, (4, 4), 1)
+    assert app.world.materials.frequency[4, 4] == app.brush.frequency
+    for _ in range(len(app.settings.ac_frequencies) - 1):
+        press(app, pygame.K_f)
+    assert app.brush.frequency == 0  # Back to DC.

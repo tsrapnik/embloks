@@ -31,6 +31,10 @@ PHYSICS_SETTINGS = (
     "speed_of_light",
     "conductor_softening",
     "test_charge_softening",
+    "battery_flow_time",
+    "dynamic_fields",
+    "absorbing_margin",
+    "absorbing_strength",
 )
 
 LAYER_FIELDS = ("visible", "gain", "opacity", "log_scale", "auto")
@@ -49,6 +53,7 @@ def save(app, path: Path) -> None:
         # Stacks are found in a fixed order from the materials, so a list lines up on load.
         "pump_charge": [w.pump_charge.get(stack, 0.0) for stack in w.stacks],
         "pump_current": [w.pump_current.get(stack) for stack in w.stacks],
+        "pump_flow": [w.pump_flow.get(stack) for stack in w.stacks],
         "layers": {
             key: {field: getattr(layer, field) for field in LAYER_FIELDS}
             for key, layer in app.layers.items()
@@ -63,6 +68,7 @@ def save(app, path: Path) -> None:
             resistance=m.resistance,
             emf=m.emf,
             orientation=m.orientation,
+            frequency=m.frequency,
             pos=p.pos,
             vel=p.vel,
             charge=p.charge,
@@ -83,7 +89,10 @@ def load(app, path: Path) -> None:
 
     # Settings first: the world reads them (e.g. carrier charge) while being rebuilt.
     # Mutate in place, since world, fields and panel all share this object.
-    for name, value in meta["settings"].items():
+    # Settings missing from older saves keep their defaults.
+    defaults = type(app.settings)()
+    for name in PHYSICS_SETTINGS:
+        value = meta["settings"].get(name, getattr(defaults, name))
         setattr(app.settings, name, type(getattr(app.settings, name))(value))
 
     world = World(meta["cols"], meta["rows"], app.settings)
@@ -92,16 +101,23 @@ def load(app, path: Path) -> None:
     m.resistance[:] = arrays["resistance"]
     m.emf[:] = arrays["emf"]
     m.orientation[:] = arrays["orientation"]
+    if "frequency" in arrays:  # Saves from before AC sources have none.
+        m.frequency[:] = arrays["frequency"]
     m.version += 1
     world._update_structure()
     p = world.particles
     p.pos, p.vel, p.charge, p.mass = arrays["pos"], arrays["vel"], arrays["charge"], arrays["mass"]
     world.fixed_pos, world.fixed_charge = arrays["fixed_pos"], arrays["fixed_charge"]
     world.fixed_version += 1
-    for stack, owed, current in zip(world.stacks, meta["pump_charge"], meta["pump_current"]):
+    flows = meta.get("pump_flow", [None] * len(world.stacks))
+    for stack, owed, current, flow in zip(
+        world.stacks, meta["pump_charge"], meta["pump_current"], flows
+    ):
         world.pump_charge[stack] = owed
         if current is not None:
             world.pump_current[stack] = current
+        if flow is not None:
+            world.pump_flow[stack] = flow
 
     app.install_world(world)
     app.current = arrays["current"]

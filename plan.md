@@ -184,7 +184,8 @@ tests/                          # physics sanity tests
     the space around the wires. Others: screening around a test charge, parallel currents,
     series batteries.
     Done: `scenes.py`, F1-F5 (battery + resistor, screening, series, capacitor with large
-    close plates, parallel paths: equal split and double width = double current). Tests check
+    close plates, parallel paths: equal split and double width = double current); F6-F7 with
+    step 15. Tests check
     the physics each scene demonstrates (S into the resistor, 3x current in series).
     Measured for step 14: F1 loop current is +18% over Ohm's law; the battery's pump current
     has a std of ~0.36 around a mean of ~0.1-0.2 (discrete jumps); electrons clump in wires.
@@ -214,7 +215,25 @@ tests/                          # physics sanity tests
     - Ohm's law in 1-cell wires: +16..27% / −17% depending on geometry; 3-cell wires within
       ~4%. A resolution limit (field can't step faster than the ~1 cell smoothing), documented.
     - Drag now scales with q/m too (Γ = R·cell_charge·q/m), so I = E/R for any q/m.
-15. **Optional: induction & waves (FDTD/PIC)** — decide later whether to add it at all.
+15. **Induction & waves (FDTD/PIC)** — done as a "dynamic fields" mode (`M`), user's choice of
+    full 2D Maxwell over retarded 3D fields or induction-only. Implementation (`maxwell.py`):
+    Yee grid (Ex, Ey edges, Bz corners), leapfrog, Gauss's law enforced exactly each tick by a
+    DST Poisson solve (Coulomb gauge: instant electrostatics, waves for the rest), 16-cell
+    absorbing margin, CFL substeps. AC sources (per-cell frequency, `F` key), fast-averaged
+    battery current feeding the fields. Scenes F6 transformer (nested loops), F7 antenna.
+    Findings while building it:
+    - Gathering E at cell centres (edge averages) hid an odd/even checkerboard: potential zig-
+      zagged ±4 V and DC current was half. Fix: staggered gather per component.
+    - No softening: single electrons in 1-cell wires starved the current. Fix: 2 passes of 1-2-1
+      smoothing on charge/current; DC current then matches instant mode (0.120 vs 0.12).
+    - 2D loops are solenoids (L = μ0·A, ~2400 at c=2): AC currents were mostly capacitive
+      charging, not circulation. Measure circulation as the same tangential current on all four
+      sides (top/bottom alone mistook polarisation for circulation). Transformer: c=8, f=0.02,
+      primary driven symmetrically (quadrupole charge → weak E inside). Result: load current
+      0.13 at -97° to the primary (Lenz: -dI/dt) vs 0.003 in instant mode.
+    - Antenna: E-field phase falls 0.256 rad/cell (free space 0.314; near field + receiver
+      re-radiation) vs 0.001 in instant mode; receiver current 7x instant mode.
+    Original notes on the option, for reference:
     Today fields follow charges instantly (Coulomb + Biot–Savart). A field *solver* instead
     stores E and B on the grid and steps Maxwell's equations forward in time (FDTD, 2D TE mode:
     Ex, Ey, Bz — the same quantities we already draw), with electrons depositing current into
