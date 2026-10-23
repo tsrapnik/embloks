@@ -14,8 +14,8 @@ def app():
     pygame.quit()
 
 
-def press(app: App, key: int) -> None:
-    pygame.event.post(pygame.event.Event(pygame.KEYDOWN, key=key))
+def press(app: App, key: int, mod: int = 0) -> None:
+    pygame.event.post(pygame.event.Event(pygame.KEYDOWN, key=key, mod=mod))
     app.handle_events()
 
 

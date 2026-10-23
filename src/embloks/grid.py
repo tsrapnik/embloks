@@ -29,6 +29,14 @@ class Grid:
         origin_y = (height - rows * cell_px) // 2
         return cls(cols, rows, cell_px, origin_x, origin_y)
 
+    @classmethod
+    def for_shape(cls, cols: int, rows: int, width: int, height: int) -> "Grid":
+        """The largest grid of exactly cols x rows cells that fits in width x height."""
+        cell_px = max(1, min(width // cols, height // rows))
+        origin_x = (width - cols * cell_px) // 2
+        origin_y = (height - rows * cell_px) // 2
+        return cls(cols, rows, cell_px, origin_x, origin_y)
+
     @property
     def pixel_width(self) -> int:
         return self.cols * self.cell_px

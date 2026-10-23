@@ -123,6 +123,11 @@ class Settings:
     # Above this many electrons, draw single pixels instead of circles (much faster).
     max_electrons_as_circles: int = 4000
 
+    # Save slots (Ctrl/Shift + digit) live here, relative to the working directory.
+    save_dir: str = "saves"
+    # How long (real seconds) save/load messages stay in the info panel.
+    message_seconds: float = 3.0
+
     hud_font_size: int = 20
     hud_text_color: tuple[int, int, int] = (220, 220, 230)
     hud_label_color: tuple[int, int, int] = (130, 190, 255)

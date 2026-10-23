@@ -174,7 +174,34 @@ tests/                          # physics sanity tests
     vectorised arrows + direct draw at full opacity + batched electron sprites (render 25 → 7 ms
     at default grid). Physics: cloud-in-cell weights shared per substep, B combined in frequency
     space. Fused/batched E+B FFT measured *slower* at large grids; not used.
-12. **Stretch** — save/load scenes (JSON/npz); optional FDTD/PIC field mode for induction & waves.
+12. **Save / load** — store the full state (materials, electrons with velocities, test charges,
+    battery pump state, smoothed current, the physics settings that shape the state, view
+    layers and speed) so a settled circuit resumes exactly. Slots via keyboard (no file
+    dialogs in pygame).
+13. **Built-in scenes** — a few loadable example scenes. Most important: the textbook
+    battery + resistor circuit (rectangular loop, battery on one side, resistor on the
+    opposite side), where the Poynting vector clearly flows from battery to resistor through
+    the space around the wires. Others: screening around a test charge, parallel currents,
+    series batteries.
+14. **Tune the physics for the textbook scene — no cheating.** It must stay a physics
+    simulation that shows how real physics works, not an animation faked to match the picture.
+    Known problems to investigate and fix at their cause:
+    - B jitters fast next to the battery, presumably because the pump makes electrons jump
+      (discrete teleports → spiky current near the terminals).
+    - With very low-resistance wires the magnetic field goes all over the place (underdamped
+      sloshing currents).
+    Look at algorithms and parameters (pump smoothing, carrier density, damping, time step,
+    display averaging) and verify each change against the existing physics tests.
+15. **Optional: induction & waves (FDTD/PIC)** — decide later whether to add it at all.
+    Today fields follow charges instantly (Coulomb + Biot–Savart). A field *solver* instead
+    stores E and B on the grid and steps Maxwell's equations forward in time (FDTD, 2D TE mode:
+    Ex, Ey, Bz — the same quantities we already draw), with electrons depositing current into
+    it (particle-in-cell). What that adds: a changing B creates an E (induction: coils,
+    transformers, back-EMF, self-inductance), and fields travel at the finite speed c, so
+    changes ripple outward as electromagnetic waves (an oscillating current radiates). Costs:
+    much smaller time step (light must not cross a cell per step), absorbing boundaries at the
+    edges, interaction with the electrostatics we have, and a whole new class of numerical
+    artefacts. Likely a separate "dynamic fields" mode next to the current quasi-static one.
 
 ## Verification
 - `pytest`: single charge E matches kq/r² (outside softening); field excluding self is zero for a

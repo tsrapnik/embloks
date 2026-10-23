@@ -1,7 +1,7 @@
 import numpy as np
 import pygame
 
-from embloks import battery, physics, render
+from embloks import battery, physics, render, storage
 from embloks.config import Settings
 from embloks.fields import ElectricField, MagneticField, poynting
 from embloks.grid import Grid
@@ -12,6 +12,7 @@ from embloks.world import World
 
 DENSITY_UP_KEYS = {pygame.K_PLUS, pygame.K_EQUALS, pygame.K_KP_PLUS}
 DENSITY_DOWN_KEYS = {pygame.K_MINUS, pygame.K_KP_MINUS}
+DIGIT_KEYS = {getattr(pygame, f"K_{n}"): n for n in range(10)}
 TOOL_KEYS = {
     pygame.K_1: Tool.CONDUCTOR,
     pygame.K_2: Tool.BATTERY,
@@ -36,6 +37,7 @@ KEY_HELP = [
     ("<  >", "slower / faster simulation (the , and . keys)"),
     ("+  -", "grid density (clears)"),
     ("C", "clear all"),
+    ("Ctrl / Shift + 0-9", "save to / load from slot"),
     ("H", "panel: full / status only / hidden"),
 ]
 PAINT_BUTTON = 1
@@ -68,13 +70,25 @@ class App:
         self.brush = Brush(self.settings)
         self.material_layer = render.MaterialLayer()
         self.hovered_cell: tuple[int, int] | None = None
+        # Short feedback (e.g. "saved to slot 2") and when it disappears (pygame ticks, ms).
+        self.message = ""
+        self._message_until = 0
         self.reset_scene()
 
     def reset_scene(self) -> None:
         """Rebuild the grid at the current density and restart the simulation."""
         s = self.settings
-        self.grid = Grid.fit(s.grid_density, s.window_width, s.window_height)
-        self.world = World(self.grid.cols, self.grid.rows, s)
+        grid = Grid.fit(s.grid_density, s.window_width, s.window_height)
+        self.install_world(World(grid.cols, grid.rows, s))
+
+    def install_world(self, world: World) -> None:
+        """Make `world` the current scene, sizing the grid to fit it, and restart time."""
+        s = self.settings
+        self.world = world
+        self.grid = Grid.for_shape(world.materials.cols, world.materials.rows,
+                                   s.window_width, s.window_height)
+        # Keep +/- stepping from the new size.
+        s.grid_density = self.grid.cols
         # Conventional current per cell, averaged over current_smoothing_time.
         self.current = np.zeros((self.grid.cols, self.grid.rows, 2))
         self.sim_time = 0.0
@@ -102,6 +116,27 @@ class App:
             s.grid_density = new
             self.reset_scene()
 
+    def save_slot(self, slot: int) -> None:
+        path = storage.slot_path(self.settings.save_dir, slot)
+        storage.save(self, path)
+        self.show_message(f"Saved slot {slot}  ({path})")
+
+    def load_slot(self, slot: int) -> None:
+        path = storage.slot_path(self.settings.save_dir, slot)
+        if not path.exists():
+            self.show_message(f"Slot {slot} is empty  (save with Ctrl+{slot})")
+            return
+        try:
+            storage.load(self, path)
+        except (OSError, ValueError, KeyError) as error:
+            self.show_message(f"Could not load slot {slot}: {error}")
+            return
+        self.show_message(f"Loaded slot {slot}")
+
+    def show_message(self, text: str) -> None:
+        self.message = text
+        self._message_until = pygame.time.get_ticks() + int(1000 * self.settings.message_seconds)
+
     def change_speed(self, steps: int) -> None:
         speeds = self.settings.sim_speeds
         index = min(range(len(speeds)), key=lambda i: abs(speeds[i] - self.sim_speed))
@@ -120,7 +155,7 @@ class App:
             if event.type == pygame.QUIT:
                 self.running = False
             elif event.type == pygame.KEYDOWN:
-                self.handle_key(event.key)
+                self.handle_key(event.key, event.mod)
             elif event.type == pygame.MOUSEBUTTONDOWN and event.button in (PAINT_BUTTON, ERASE_BUTTON):
                 if event.button == PAINT_BUTTON and self.layer_panel.handle_click(event.pos):
                     continue
@@ -139,9 +174,15 @@ class App:
         rect = self.layer_panel.rect
         return self.layer_panel.visible and rect is not None and rect.collidepoint(pos)
 
-    def handle_key(self, key: int) -> None:
+    def handle_key(self, key: int, mod: int = 0) -> None:
         brush = self.brush
-        if key == pygame.K_ESCAPE:
+        if key in DIGIT_KEYS and mod & (pygame.KMOD_CTRL | pygame.KMOD_SHIFT):
+            slot = DIGIT_KEYS[key]
+            if mod & pygame.KMOD_CTRL:
+                self.save_slot(slot)
+            else:
+                self.load_slot(slot)
+        elif key == pygame.K_ESCAPE:
             self.running = False
         elif key == pygame.K_SPACE:
             self.paused = not self.paused
@@ -314,7 +355,10 @@ class App:
         elif b.tool == Tool.CHARGE:
             tool += f"  ·  {b.charge:+g} e"
         w = self.world
-        rows = [
+        rows = []
+        if self.message and pygame.time.get_ticks() < self._message_until:
+            rows.append(("»", self.message))
+        rows += [
             ("Tool", tool),
             ("Brush", f"radius {b.radius}"),
             ("Speed", f"{self.sim_speed:g}× (simulated time per second)" + ("  ·  PAUSED" if self.paused else "")),

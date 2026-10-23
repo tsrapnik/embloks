@@ -36,6 +36,8 @@ video driver). Configuration is the `[tool.pytest.ini_options]` section of `pypr
 | `R`                 | Rotate battery orientation (clockwise)                        |
 | `[` / `]` or wheel  | Smaller / larger brush                                        |
 | `C`                 | Clear the canvas                                              |
+| Ctrl + `0`-`9`      | Save the scene to a slot                                      |
+| Shift + `0`-`9`     | Load the scene from a slot                                    |
 | `P`                 | Hide / show particles (ions and electrons)                    |
 | `E`                 | Hide / show electric field arrows                             |
 | `B`                 | Hide / show magnetic field colours                            |
@@ -186,6 +188,19 @@ Caveat: charges here are 3D point charges confined to a plane, so in a real 3D w
 energy also flows above and below the screen. The arrows show the direction and relative strength
 correctly, but adding up S around a resistor *in the plane* gives only part of the I²R power it
 dissipates (about 1/6 in a quick check).
+
+### Saving and loading
+
+**Ctrl + a digit** saves the whole scene to one of ten slots, **Shift + the digit** loads it
+back. A slot is a file `saves/slot<N>.npz` (relative to where you start the app), so you can copy
+or share them. A short message in the info panel confirms each save or load.
+
+A save holds everything needed to continue exactly where you left off: the materials, every
+electron with its velocity, test charges, the batteries' internal state, the averaged currents,
+the simulated time, the speed and the display layers. It also stores the physics settings that
+shaped the scene (charge per cell, softening, speed of light, ...), and restores them on load,
+so a scene behaves the same even after `config.py` was edited. Loading resizes the grid to the
+saved scene.
 
 ### Display layers
 
