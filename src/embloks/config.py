@@ -47,6 +47,16 @@ class Settings:
     # Electrons per conductive cell; each carries -e/n so cells stay neutral.
     carriers_per_cell: int = 1
 
+    # Drag on electrons: damping rate (1/time) = resistance * drag_per_resistance.
+    drag_per_resistance: float = 1.0
+    # Batteries have no resistance setting; this small value keeps electrons in them damped.
+    battery_resistance: float = 0.1
+    # Fraction of normal velocity kept when an electron bounces off a closed cell face.
+    wall_restitution: float = 0.3
+    # Largest move (cells) per substep, and the cap on substeps per tick.
+    max_step: float = 0.4
+    max_substeps: int = 16
+
     # Coulomb constant 1/(4 pi eps0).
     coulomb_k: float = 1.0
     # Softening length (cells) of ions and electrons. Ions are smeared over ~their cell,

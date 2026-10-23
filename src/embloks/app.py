@@ -1,7 +1,7 @@
 import numpy as np
 import pygame
 
-from embloks import render
+from embloks import physics, render
 from embloks.config import Settings
 from embloks.fields import ElectricField
 from embloks.grid import Grid
@@ -162,7 +162,7 @@ class App:
             self._accumulator = 0.0
 
     def step(self, dt: float) -> None:
-        # Physics goes here in later steps.
+        physics.step(self.world, self.electric, dt, self.settings)
         self.sim_time += dt
         self.tick_count += 1
 
@@ -207,6 +207,10 @@ class App:
             "1-4 tool   Up/Down value   R rotate   [ ] / wheel brush   C clear",
             "E field arrows   P particles   H hide",
         ]
+        conductive = self.world.materials.conductive
+        if conductive.any():
+            inside = np.hypot(*e_grid[conductive].T).mean()
+            lines.append(f"Mean |E| inside conductors {inside:.4f}")
         if self.hovered_cell is not None:
             col, row = self.hovered_cell
             lines.append(f"Cell {self.hovered_cell}: {self.describe_cell(col, row)}")

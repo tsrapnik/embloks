@@ -73,8 +73,8 @@ cells is called an *island*; charge can never leave its island.
 Every conductive cell (conductor or battery) holds:
 
 - one fixed **positive ion** (red ring) at its centre, with charge +e, and
-- **electrons** (blue dots) that will be free to move within their island once physics is
-  added. By default there is one electron per cell; `carriers_per_cell` in
+- **electrons** (blue dots) that move freely within their island (see *Electron motion*).
+  By default there is one electron per cell; `carriers_per_cell` in
   [config.py](src/embloks/config.py) sets more, each carrying a fraction -e/n so cells stay neutral.
 
 Painting a conductive cell adds its ion and electrons. Erasing a cell removes its ion and the same
@@ -107,8 +107,30 @@ like a smooth positive background, which is what lets electrons move freely thro
 instead of each one getting stuck on an ion. Electrons are smeared exactly the same way
 (`conductor_softening`), so an electron sitting on its ion cancels it completely.
 
-Electrons don't move yet, so each electron and its ion form a small dipole, visible as short
-arrows inside conductors.
+### Electron motion
+
+While the simulation runs (Space pauses it), every electron is pushed by the electric field at
+its position (F = qE). Moving electrons feel a **drag** proportional to the resistance of the cell
+they are in. Drag is what makes resistance resist: an electron in a steady field settles at a
+drift speed proportional to the field and inversely proportional to the resistance (Ohm's law).
+Low resistance means fast, sloshing electrons; high resistance means slow, creeping ones.
+
+Electrons can never leave their island: they bounce off any cell edge that doesn't conduct
+(vacuum, a battery's side faces, the edge of the canvas), losing part of their speed
+(`wall_restitution`). Fast electrons are moved in several small substeps, so they can't skip
+through a one-cell-wide wall.
+
+What to try: place a test charge next to a conductor. Electrons flow towards a positive charge
+(away from a negative one) until the field *inside* the conductor is nearly zero. This is
+**screening**, and it's why field lines always meet a conductor's surface at right angles. The info
+panel shows the mean |E| over all conductor cells, which drops as the electrons settle. It
+never reaches exactly zero: one electron per cell is grainy, so some small arrows of random
+direction remain. More `carriers_per_cell` makes it smoother.
+
+Newly painted cells get their electrons right on top of their ions, so a fresh conductor is
+neutral everywhere and has no field until something disturbs it.
+
+Time: the simulation runs at about one time unit per real second (`dt` per tick in config.py).
 
 The brush outline follows the mouse. The info panel (top-left) shows the current tool, its value,
 the brush size, the number of electrons and islands, and what is in the cell under the mouse

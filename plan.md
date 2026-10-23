@@ -138,6 +138,10 @@ tests/                          # physics sanity tests
    `ElectricField.at` stays an exact direct sum for arbitrary points.
 6. **Electron dynamics** — Lorentz (E only for now), implicit drag, substeps, confinement (§7).
    Expect: electrons screen the test charge, E inside conductor → ~0.
+   Done particle-in-cell style: forces read from the FFT grid field with the same cloud-in-cell
+   weights used for deposition (zero self-force, momentum conserving). Electrons spawn on their
+   ion (+tiny jitter): random spawning left a disordered "electron glass" that relaxed slowly
+   and kept visible noise. Measured: ~95% of an external field screened within ~5 time units.
 7. **Battery** — EMF force + side walls (§8). HUD inspector: hover a cell to see E, Bz, S, and
    current through it (charge crossing per second). Verify Ohm's law with a battery + wire loop.
 8. **Magnetism** — Bz from moving charges (Biot–Savart), v×B force, B layer (red/blue heatmap or

@@ -76,51 +76,80 @@ def grid_kernel(cols: int, rows: int, softening: float, k: float = 1.0) -> GridK
     return GridKernel(cols, rows, softening, k)
 
 
-def deposit(positions: np.ndarray, charges: np.ndarray, cols: int, rows: int) -> np.ndarray:
-    """Spread point charges over the 4 nearest cell centres (cloud-in-cell).
+def _cic_weights(positions: np.ndarray, cols: int, rows: int):
+    """The 4 cell centres around each position and their bilinear weights.
 
-    Charge is conserved: weight that would land outside the grid stays on the edge cells.
+    Yields (flat_index, weight) per corner. Corners outside the grid are clamped
+    onto the edge cells, so weights per position still sum to 1.
     """
-    grid = np.zeros((cols, rows))
     u = positions[:, 0] - 0.5
     v = positions[:, 1] - 0.5
     c0, r0 = np.floor(u).astype(np.int64), np.floor(v).astype(np.int64)
     fu, fv = u - c0, v - r0
     for dc, wc in ((0, 1 - fu), (1, fu)):
+        c = np.clip(c0 + dc, 0, cols - 1)
         for dr, wr in ((0, 1 - fv), (1, fv)):
-            c = np.clip(c0 + dc, 0, cols - 1)
             r = np.clip(r0 + dr, 0, rows - 1)
-            np.add.at(grid, (c, r), charges * wc * wr)
-    return grid
+            yield c * rows + r, wc * wr
+
+
+def deposit(positions: np.ndarray, charges: np.ndarray, cols: int, rows: int) -> np.ndarray:
+    """Spread point charges over the 4 nearest cell centres (cloud-in-cell).
+
+    Charge is conserved: weight that would land outside the grid stays on the edge cells.
+    """
+    grid = np.zeros(cols * rows)
+    for index, weight in _cic_weights(positions, cols, rows):
+        grid += np.bincount(index, charges * weight, minlength=cols * rows)
+    return grid.reshape(cols, rows)
+
+
+def interpolate(grid: np.ndarray, positions: np.ndarray) -> np.ndarray:
+    """Read a (cols, rows, d) grid at positions with the same weights `deposit` uses.
+
+    Using identical weights both ways makes the grid force on a particle from
+    its own charge cancel exactly (the Coulomb kernel is antisymmetric).
+    """
+    cols, rows = grid.shape[:2]
+    flat = grid.reshape(cols * rows, -1)
+    out = np.zeros((len(positions), flat.shape[1]))
+    for index, weight in _cic_weights(positions, cols, rows):
+        out += flat[index] * weight[:, None]
+    return out
 
 
 class ElectricField:
     """Electric field of a World: ions, electrons and fixed test charges.
 
-    `at` is exact (direct sums). `grid` is the fast version for display: all
-    charges go through FFT convolution on the grid (the ion part is cached until
-    the next paint). Electrons are deposited onto cell centres for this, which
-    blurs their field within about a cell.
+    `at` is exact (direct sums). `grid` is the fast version, used for display and
+    for forces: all charges go through FFT convolution on the grid. Ions and test
+    charges sit on cell centres, so their part is exact and cached until they
+    change. Electrons are deposited onto cell centres, which blurs their field
+    within about a cell (on the scale of the softening anyway).
     """
 
     def __init__(self, settings: Settings):
         self.settings = settings
-        self._ion_key = None
-        self._ion_grid: np.ndarray | None = None
+        self._static_key = None
+        self._static_grid: np.ndarray | None = None
 
     def _kernel(self, world, softening: float) -> GridKernel:
         m = world.materials
         return grid_kernel(m.cols, m.rows, softening, self.settings.coulomb_k)
 
-    def ion_grid(self, world) -> np.ndarray:
-        """Ion field at every cell centre, shape (cols, rows, 2)."""
-        key = (id(world.materials), world.materials.version)
-        if key != self._ion_key:
-            s = self.settings
-            charge = world.materials.conductive * s.elementary_charge
-            self._ion_grid = self._kernel(world, s.conductor_softening).field(charge)
-            self._ion_key = key
-        return self._ion_grid
+    def static_grid(self, world) -> np.ndarray:
+        """Field of ions and test charges at every cell centre, shape (cols, rows, 2)."""
+        key = (id(world), world.materials.version, world.fixed_version)
+        if key != self._static_key:
+            s, m = self.settings, world.materials
+            ions = self._kernel(world, s.conductor_softening).field(
+                m.conductive * s.elementary_charge
+            )
+            charge = deposit(world.fixed_pos, world.fixed_charge, m.cols, m.rows)
+            fixed = self._kernel(world, s.test_charge_softening).field(charge)
+            self._static_grid = ions + fixed
+            self._static_key = key
+        return self._static_grid
 
     def electron_grid(self, world) -> np.ndarray:
         """Approximate electron field at every cell centre, shape (cols, rows, 2)."""
@@ -128,15 +157,9 @@ class ElectricField:
         charge = deposit(p.pos, p.charge, m.cols, m.rows)
         return self._kernel(world, self.settings.conductor_softening).field(charge)
 
-    def fixed_grid(self, world) -> np.ndarray:
-        """Test charge field at every cell centre (exact: test charges sit on centres)."""
-        m = world.materials
-        charge = deposit(world.fixed_pos, world.fixed_charge, m.cols, m.rows)
-        return self._kernel(world, self.settings.test_charge_softening).field(charge)
-
     def grid(self, world) -> np.ndarray:
-        """Total field at every cell centre (fast, display quality), shape (cols, rows, 2)."""
-        return self.ion_grid(world) + self.electron_grid(world) + self.fixed_grid(world)
+        """Total field at every cell centre, shape (cols, rows, 2)."""
+        return self.static_grid(world) + self.electron_grid(world)
 
     def at(self, world, points: np.ndarray) -> np.ndarray:
         """Exact total field at arbitrary points (M, 2), all sources summed directly."""
@@ -147,11 +170,7 @@ class ElectricField:
         return (
             coulomb_field(points, ions, ion_charges, s.conductor_softening, s.coulomb_k)
             + coulomb_field(points, p.pos, p.charge, s.conductor_softening, s.coulomb_k)
-            + self._fixed(world, points)
-        )
-
-    def _fixed(self, world, points: np.ndarray) -> np.ndarray:
-        s = self.settings
-        return coulomb_field(
-            points, world.fixed_pos, world.fixed_charge, s.test_charge_softening, s.coulomb_k
+            + coulomb_field(
+                points, world.fixed_pos, world.fixed_charge, s.test_charge_softening, s.coulomb_k
+            )
         )

@@ -5,8 +5,10 @@ from embloks.connectivity import compute_connectivity
 from embloks.materials import Material, Materials, Orientation
 from embloks.particles import Particles
 
-# Electrons spawn this far from their cell's edges.
-SPAWN_MARGIN = 0.1
+# Electrons spawn on their cell's ion, offset by at most this much (cells). On the
+# ion they cancel it exactly, so a fresh conductor is field-free; the small jitter
+# lets several electrons in one cell separate instead of moving as one stack.
+SPAWN_JITTER = 0.02
 
 
 class World:
@@ -25,6 +27,8 @@ class World:
         # Fixed test charges, at most one per cell, at cell centres.
         self.fixed_pos = np.empty((0, 2))
         self.fixed_charge = np.empty(0)
+        # Bumped whenever test charges change, so cached fields know to rebuild.
+        self.fixed_version = 0
 
     @property
     def electron_charge(self) -> float:
@@ -63,6 +67,7 @@ class World:
         self.connectivity = compute_connectivity(self.materials)
         self.fixed_pos = np.empty((0, 2))
         self.fixed_charge = np.empty(0)
+        self.fixed_version += 1
 
     def place_charges(self, cols: np.ndarray, rows: np.ndarray, charge: float) -> None:
         """Put a fixed test charge at the centre of each given cell, replacing any there."""
@@ -70,6 +75,7 @@ class World:
         cells = np.unique(np.stack([cols, rows], axis=-1), axis=0)
         self.fixed_pos = np.concatenate([self.fixed_pos, cells + 0.5])
         self.fixed_charge = np.concatenate([self.fixed_charge, np.full(len(cells), charge)])
+        self.fixed_version += 1
 
     def remove_charges(self, cols: np.ndarray, rows: np.ndarray) -> None:
         """Remove the fixed test charges in the given cells."""
@@ -78,12 +84,15 @@ class World:
         hit = np.isin(fixed_cells[:, 0] * n_rows + fixed_cells[:, 1], cols * n_rows + rows)
         self.fixed_pos = self.fixed_pos[~hit]
         self.fixed_charge = self.fixed_charge[~hit]
+        self.fixed_version += 1
 
     def _spawn_carriers(self, cells: np.ndarray) -> None:
         n = self.settings.carriers_per_cell
-        corners = np.repeat(np.argwhere(cells), n, axis=0).astype(float)
-        offsets = self.rng.uniform(SPAWN_MARGIN, 1 - SPAWN_MARGIN, size=corners.shape)
-        self.particles.add(corners + offsets, self.electron_charge, self.electron_mass)
+        centres = np.repeat(np.argwhere(cells), n, axis=0) + 0.5
+        self.particles.add(centres + self._jitter(centres.shape), self.electron_charge, self.electron_mass)
+
+    def _jitter(self, shape: tuple[int, ...]) -> np.ndarray:
+        return self.rng.uniform(-SPAWN_JITTER, SPAWN_JITTER, size=shape)
 
     def _remove_carriers(self, removed: np.ndarray, old_labels: np.ndarray) -> None:
         """Take away the electrons that belonged to the erased cells.
@@ -128,8 +137,7 @@ class World:
         centres = np.argwhere(cells) + 0.5
         d2 = ((p.pos[indices, None, :] - centres[None, :, :]) ** 2).sum(axis=2)
         nearest = centres[np.argmin(d2, axis=1)]
-        jitter = self.rng.uniform(-0.5 + SPAWN_MARGIN, 0.5 - SPAWN_MARGIN, size=nearest.shape)
-        p.pos[indices] = nearest + jitter
+        p.pos[indices] = nearest + self._jitter(nearest.shape)
         p.vel[indices] = 0.0
 
 

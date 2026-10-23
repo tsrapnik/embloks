@@ -2,7 +2,7 @@ import numpy as np
 import pytest
 
 from embloks.config import Settings
-from embloks.fields import ElectricField, GridKernel, coulomb_field, deposit
+from embloks.fields import ElectricField, GridKernel, coulomb_field, deposit, interpolate
 from embloks.materials import Material
 from embloks.world import World
 
@@ -86,11 +86,31 @@ def test_world_grid_field_matches_exact_field_away_from_electrons(world):
     assert np.allclose(grid[far[:, 0], far[:, 1]], exact, rtol=0.05, atol=1e-3)
 
 
-def test_ion_cache_is_refreshed_after_painting(world):
+def test_static_cache_is_refreshed_after_painting_and_placing_charges(world):
     electric = ElectricField(world.settings)
-    assert np.allclose(electric.ion_grid(world), 0)
+    assert np.allclose(electric.static_grid(world), 0)
     world.paint(np.array([10]), np.array([7]), Material.CONDUCTOR, resistance=1)
-    assert electric.ion_grid(world)[12, 7, 0] > 0  # Ion at (10, 7) pushes right.
+    assert electric.static_grid(world)[12, 7, 0] > 0  # Ion at (10, 7) pushes right.
+    world.place_charges(np.array([15]), np.array([7]), 5)
+    assert electric.static_grid(world)[12, 7, 0] < 0  # Now the +5 charge dominates.
+
+
+def test_interpolate_reads_back_grid_values_and_is_bilinear():
+    grid = np.zeros((4, 3, 2))
+    grid[1, 1] = [2.0, -4.0]
+    grid[2, 1] = [4.0, 0.0]
+    on_centre = interpolate(grid, np.array([[1.5, 1.5]]))
+    halfway = interpolate(grid, np.array([[2.0, 1.5]]))
+    assert np.allclose(on_centre, [[2.0, -4.0]])
+    assert np.allclose(halfway, [[3.0, -2.0]])
+
+
+def test_grid_force_on_a_lone_electron_is_zero(world):
+    """Same deposit and read-back weights => a particle never pushes itself."""
+    world.particles.add(np.array([[7.3, 4.8]]), -1.0, 1.0)
+    electric = ElectricField(world.settings)
+    own = interpolate(electric.grid(world), world.particles.pos)
+    assert np.abs(own).max() < 1e-12
 
 
 def test_neutral_cell_has_weak_far_field(world):
