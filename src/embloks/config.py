@@ -76,6 +76,10 @@ class Settings:
 
     # Coulomb constant 1/(4 pi eps0).
     coulomb_k: float = 1.0
+    # Speed of light (cells per time unit); mu0 / 4 pi = coulomb_k / c^2. Magnetic forces
+    # are ~ (v/c)^2 times electric ones, so a lower c makes them stronger. Electrons
+    # drift at ~0.01-1, far below this.
+    speed_of_light: float = 2.0
     # Softening length (cells) of ions and electrons. Ions are smeared over ~their cell,
     # so neighbouring ions form a smooth positive background electrons can roam over
     # (a lattice ripple of roughly exp(-2 pi * 0.8) ~ 1%). Electrons must use the same
@@ -97,6 +101,14 @@ class Settings:
     e_arrow_dim_color: tuple[int, int, int] = (90, 75, 30)
     # On fine grids only every n-th cell gets an arrow, keeping arrows this far apart.
     min_arrow_spacing_px: int = 16
+
+    # B heatmap: opacity grows with log10(c^2 |B|) between these bounds. Scaling by c^2
+    # (i.e. showing the current-like part of B) keeps the colours independent of c.
+    b_field_min: float = 1e-3
+    b_field_max: float = 1.0
+    b_out_color: tuple[int, int, int] = (235, 70, 70)
+    b_in_color: tuple[int, int, int] = (70, 130, 255)
+    b_max_alpha: int = 150
 
     ion_color: tuple[int, int, int] = (200, 40, 40)
     electron_color: tuple[int, int, int] = (90, 170, 255)

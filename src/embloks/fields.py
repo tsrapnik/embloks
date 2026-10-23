@@ -63,6 +63,35 @@ def coulomb_potential(
     return potential
 
 
+def biot_savart(
+    points: np.ndarray,
+    sources: np.ndarray,
+    currents: np.ndarray,
+    softening: float,
+    k: float = 1.0,
+    c: float = 1.0,
+) -> np.ndarray:
+    """B_z at `points` (M,) from moving charges at `sources` with q*v = `currents` (N, 2).
+
+    Low-speed Biot-Savart with the same softening as Coulomb:
+    B_z = (k / c^2) * sum q (v x r)_z / (r^2 + eps^2)^1.5, with r = point - source.
+    Screen coordinates have y pointing down, so positive B_z points INTO the screen.
+    """
+    bz = np.zeros(len(points))
+    if len(points) == 0 or len(sources) == 0:
+        return bz
+    rows_per_block = max(1, _BLOCK_SIZE // len(sources))
+    eps2 = softening**2
+    for start in range(0, len(points), rows_per_block):
+        block = points[start : start + rows_per_block]
+        dx = block[:, 0, None] - sources[None, :, 0]
+        dy = block[:, 1, None] - sources[None, :, 1]
+        r2 = dx * dx + dy * dy + eps2
+        cross = currents[None, :, 0] * dy - currents[None, :, 1] * dx
+        bz[start : start + rows_per_block] = (cross / (r2 * np.sqrt(r2))).sum(axis=1)
+    return k / c**2 * bz
+
+
 class GridKernel:
     """Field and potential at every cell centre from charges on cell centres, via FFT.
 
@@ -100,6 +129,15 @@ class GridKernel:
     def potential(self, charge_grid: np.ndarray) -> np.ndarray:
         """`charge_grid` (cols, rows) -> potential (cols, rows)."""
         return self._apply(fft.rfft2(charge_grid, s=self.shape), self._kv)
+
+    def curl(self, current_grid: np.ndarray) -> np.ndarray:
+        """Current density q*v (cols, rows, 2) -> sum J x r / r^3, z-component (cols, rows).
+
+        Divide by c^2 for B_z (biot_savart without the 1/c^2).
+        """
+        jx = fft.rfft2(current_grid[..., 0], s=self.shape)
+        jy = fft.rfft2(current_grid[..., 1], s=self.shape)
+        return self._apply(jx, self._ky) - self._apply(jy, self._kx)
 
 
 @lru_cache(maxsize=8)
@@ -225,3 +263,23 @@ class ElectricField:
             + kernel(points, p.pos, p.charge, s.conductor_softening, s.coulomb_k)
             + kernel(points, world.fixed_pos, world.fixed_charge, s.test_charge_softening, s.coulomb_k)
         )
+
+
+class MagneticField:
+    """B_z of a World from a current density grid (electrons plus battery currents)."""
+
+    def __init__(self, settings: Settings):
+        self.settings = settings
+
+    def grid(self, world, current: np.ndarray) -> np.ndarray:
+        """B_z at every cell centre from current density `current` (cols, rows, 2)."""
+        s, m = self.settings, world.materials
+        kernel = grid_kernel(m.cols, m.rows, s.conductor_softening, s.coulomb_k)
+        return kernel.curl(current) / s.speed_of_light**2
+
+    def electron_current(self, world) -> np.ndarray:
+        """Electron current q*v deposited onto cell centres (cloud-in-cell), (cols, rows, 2)."""
+        m, p = world.materials, world.particles
+        jx = deposit(p.pos, p.charge * p.vel[:, 0], m.cols, m.rows)
+        jy = deposit(p.pos, p.charge * p.vel[:, 1], m.cols, m.rows)
+        return np.stack([jx, jy], axis=-1)

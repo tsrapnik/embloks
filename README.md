@@ -38,6 +38,7 @@ video driver). Configuration is the `[tool.pytest.ini_options]` section of `pypr
 | `C`                 | Clear the canvas                                              |
 | `P`                 | Hide / show particles (ions and electrons)                    |
 | `E`                 | Hide / show electric field arrows                             |
+| `B`                 | Hide / show magnetic field colours                            |
 | `H`                 | Info panel: full / status only / hidden                       |
 | `+` / `-`           | Finer / coarser grid (resets the scene)                       |
 | Space               | Pause / resume physics                                        |
@@ -140,6 +141,31 @@ random direction remain. More `carriers_per_cell` makes it smoother.
 Newly painted cells get their electrons right on top of their ions, so a fresh conductor is
 neutral everywhere and has no field until something disturbs it.
 
+### Magnetic field
+
+Moving charges make a magnetic field **B** (Biot–Savart law), and B pushes on moving charges
+(the Lorentz force `F = q(E + v × B)`). Because every charge moves within the plane, B always
+points straight *out of* or *into* the screen. So it is a single signed number per cell, shown
+as a colour rather than arrows:
+
+- **red**: B points out of the screen,
+- **blue**: B points into the screen,
+- stronger colour: stronger field (logarithmic scale, like the E arrows).
+
+Right-hand rule: curl the fingers of your right hand along the (conventional) current; your
+thumb points along B. A loop with current flowing anticlockwise on screen is red inside and
+faintly blue outside. A battery's own current counts too, so the loop is closed.
+
+The magnetic force is perpendicular to an electron's motion: it steers, never speeds up. It is
+roughly (v/c)² times weaker than the electric force, where `speed_of_light` (2 cells per time
+unit in [config.py](src/embloks/config.py)) is much larger than the electrons' drift speeds, so
+its effect on the motion is tiny, as in real circuits. Lower `speed_of_light` to exaggerate it.
+The colours are scaled by c², so they look the same whatever c is. The info panel shows B under
+the mouse. `B` toggles the colours.
+
+Limitation: fields here follow the charges instantly. A *changing* magnetic field does not
+create an electric field, so there is no induction (no coils, transformers or EM waves).
+
 ### Simulation speed
 
 Physics advances in fixed ticks of `dt` = 1/30 time unit. Electrons respond within a few time
@@ -190,7 +216,7 @@ and the **keys**. `H` cycles between showing all of it, only status and cell, an
 the cell under the mouse it shows:
 
 - the material, island number and electron count (or the battery's stack details),
-- the electric potential **V** and field **E** at its centre,
+- the electric potential **V**, field **E** and magnetic field **B** at its centre,
 - for conductors, the **current** through it: conventional current (the direction positive
   charge would flow, opposite to the electrons), averaged over about a second
   (`current_smoothing_time`).
@@ -221,11 +247,13 @@ The window title shows the frame rate, simulation time, paused state and grid si
   `cells × charges` operations. Instead, the charges are put on the grid and the field (and the
   potential, which the batteries need) is computed as a convolution with the Coulomb kernel using
   FFTs, which costs about `cells × log(cells)` no matter how many electrons there are. The
-  kernel's FFT is computed once per grid size.
-- **Cloud-in-cell.** Electrons sit anywhere, not just on cell centres, so each one's charge is
-  shared over the 4 nearest cell centres in proportion to how close it is. Each electron reads
-  the field back with exactly the same weights. This symmetry means an electron feels no force
-  from itself, and every push between two electrons is equal and opposite.
+  kernel's FFT is computed once per grid size. The magnetic field reuses the same kernels: B is
+  the current density (charge × velocity) convolved with them, crossed.
+- **Cloud-in-cell.** Electrons sit anywhere, not just on cell centres, so each one's charge (and
+  current) is shared over the 4 nearest cell centres in proportion to how close it is. Each
+  electron reads the fields back with exactly the same weights. This symmetry means an electron
+  feels no electric or magnetic force from itself, and every push between two electrons is equal
+  and opposite.
 - **Caching.** Ions and test charges only change when you paint, so their field is computed once
   and reused until then. Each tick only the electrons' part is recomputed. The material image is
   likewise only redrawn after painting.

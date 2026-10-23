@@ -157,6 +157,10 @@ tests/                          # physics sanity tests
    a cell to see V, E and current through it. Verified Ohm's law with a battery + wire loop.
 8. **Magnetism** — Bz from moving charges (Biot–Savart), v×B force, B layer (red/blue heatmap or
    ⊙/⊗), `c` setting.
+   Done: Bz = (1/c²)[Jx ⊛ Ky − Jy ⊛ Kx] with the existing FFT kernels, J deposited cloud-in-cell
+   (no magnetic self-force). Battery pump current is added along stack cells (pumped electrons
+   teleport, so they carry no velocity). Display uses the smoothed current; red = out of screen,
+   blue = into (screen y is down, so +Bz is *into* the screen). c = 2 by default.
 9. **Poynting** — S = E×B/μ0 per cell, S layer.
 10. **Visualisation controls** — per layer: on/off, scale, opacity, linear/log; display EMA
     smoothing; small side panel (keyboard shortcuts first, clickable panel after).

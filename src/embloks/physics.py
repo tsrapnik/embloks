@@ -2,7 +2,8 @@ import numpy as np
 
 from embloks.config import Settings
 from embloks.connectivity import Connectivity
-from embloks.fields import ElectricField, interpolate
+from embloks import battery
+from embloks.fields import ElectricField, MagneticField, interpolate
 
 # Particles stopped at a wall stay this far inside their cell.
 _WALL_GAP = 1e-6
@@ -26,6 +27,15 @@ def current_density(world) -> np.ndarray:
     jx = np.bincount(index, p.charge * p.vel[:, 0], minlength=size)
     jy = np.bincount(index, p.charge * p.vel[:, 1], minlength=size)
     return np.stack([jx, jy], axis=-1).reshape(m.cols, m.rows, 2)
+
+
+def lorentz_field(e: np.ndarray, vel: np.ndarray, bz: np.ndarray) -> np.ndarray:
+    """E + v x B for in-plane velocities and B = (0, 0, B_z); force per unit charge.
+
+    v x (0, 0, B_z) = (v_y B_z, -v_x B_z): in the plane and perpendicular to v,
+    so the magnetic part steers charges but never speeds them up.
+    """
+    return e + np.stack([vel[:, 1] * bz, -vel[:, 0] * bz], axis=-1)
 
 
 def kick(vel: np.ndarray, acc: np.ndarray, damping: np.ndarray, dt: float) -> np.ndarray:
@@ -81,8 +91,9 @@ def step(world, electric: ElectricField, dt: float, settings: Settings) -> int:
     """Advance the electrons by dt. Returns the number of substeps used.
 
     Substeps keep every move below max_step cells, so confine() sees at most
-    one face crossing per axis. Forces come from the grid field, read back
-    with the same weights used to deposit charge (no self-force).
+    one face crossing per axis. Forces are the Lorentz force q (E + v x B), with
+    both fields from the grid, read back with the same weights used to deposit
+    charge and current (no self-force).
     """
     p = world.particles
     if len(p) == 0:
@@ -91,10 +102,14 @@ def step(world, electric: ElectricField, dt: float, settings: Settings) -> int:
     speed = np.sqrt((p.vel**2).sum(axis=1)).max()
     substeps = int(np.clip(np.ceil(speed * dt / s.max_step), 1, s.max_substeps))
     h = dt / substeps
+    magnetic = MagneticField(s)
+    batteries = battery.current_grid(world)
     for _ in range(substeps):
         cols, rows = p.cells()
         field = interpolate(electric.grid(world), p.pos)
-        acc = (p.charge / p.mass)[:, None] * field
+        current = magnetic.electron_current(world) + batteries
+        bz = interpolate(magnetic.grid(world, current)[..., None], p.pos)[:, 0]
+        acc = (p.charge / p.mass)[:, None] * lorentz_field(field, p.vel, bz)
         vel = kick(p.vel, acc, damping_rates(world, cols, rows, s), h)
         move = vel * h
         # Safety net if velocity jumped within this substep: never move further than max_step.

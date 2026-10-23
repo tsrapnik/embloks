@@ -117,6 +117,23 @@ def pump(world, potential: np.ndarray, dt: float, settings: Settings) -> None:
             break
 
 
+def current_grid(world) -> np.ndarray:
+    """The batteries' internal currents as a current density, shape (cols, rows, 2).
+
+    Pumped electrons jump across a battery instead of moving through it, so they
+    carry no velocity; this puts the (smoothed) pump current back along the
+    stack's cells, closing the current loop for magnetic fields.
+    """
+    m = world.materials
+    grid = np.zeros((m.cols, m.rows, 2))
+    for stack, current in world.pump_current.items():
+        # Positive current flows from the low terminal towards the high one.
+        direction = np.sign(np.subtract(stack.high, stack.low))
+        for cell in stack.cells:
+            grid[cell] += current * direction
+    return grid
+
+
 def _move_electron(world, source: tuple[int, int], target: tuple[int, int]) -> bool:
     """Move the electron nearest the source terminal (along the wire) to the target."""
     p = world.particles

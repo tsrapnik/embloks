@@ -238,3 +238,29 @@ def draw_fixed_charges(
             pygame.draw.line(surface, (255, 255, 255), (cx - half, cy), (cx + half, cy), width)
             if q > 0:
                 pygame.draw.line(surface, (255, 255, 255), (cx, cy - half), (cx, cy + half), width)
+
+
+def draw_magnetic_field(
+    surface: pygame.Surface, grid: Grid, bz: np.ndarray, settings: Settings
+) -> None:
+    """Translucent heatmap of B_z: red out of the screen, blue into it.
+
+    Opacity grows with log10(c^2 |B_z|), so the colours mean the same for any c.
+    Positive B_z points into the screen (screen y points down).
+    """
+    s = settings
+    magnitude = np.abs(bz) * s.speed_of_light**2
+    with np.errstate(divide="ignore"):
+        t = np.clip(np.log(magnitude / s.b_field_min) / np.log(s.b_field_max / s.b_field_min), 0, 1)
+    if not t.any():
+        return
+    small = pygame.Surface(bz.shape, pygame.SRCALPHA)
+    rgb = pygame.surfarray.pixels3d(small)
+    rgb[:] = np.where((bz > 0)[..., None], s.b_in_color, s.b_out_color)
+    del rgb
+    alpha = pygame.surfarray.pixels_alpha(small)
+    alpha[:] = (t * s.b_max_alpha).astype(np.uint8)
+    del alpha  # Release the surface locks before scaling.
+    # Smooth scaling blends neighbouring cells into a continuous field.
+    layer = pygame.transform.smoothscale(small, (grid.pixel_width, grid.pixel_height))
+    surface.blit(layer, (grid.origin_x, grid.origin_y))

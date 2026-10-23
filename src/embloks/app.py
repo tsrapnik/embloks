@@ -3,7 +3,7 @@ import pygame
 
 from embloks import battery, physics, render
 from embloks.config import Settings
-from embloks.fields import ElectricField
+from embloks.fields import ElectricField, MagneticField
 from embloks.grid import Grid
 from embloks.materials import Material, Orientation
 from embloks.ui import Brush, Tool, line_cells
@@ -27,7 +27,7 @@ KEY_HELP = [
     ("Up  Down", "tool value: resistance / EMF / charge"),
     ("R", "rotate battery"),
     ("[  ]  wheel", "brush size"),
-    ("E  P", "show field arrows / particles"),
+    ("E  B  P", "show E arrows / B colours / particles"),
     ("Space", "pause"),
     ("<  >", "slower / faster simulation (the , and . keys)"),
     ("+  -", "grid density (clears)"),
@@ -53,7 +53,9 @@ class App:
         self.sim_speed = self.settings.default_sim_speed
         self.show_particles = True
         self.show_e_field = True
+        self.show_b_field = True
         self.electric = ElectricField(self.settings)
+        self.magnetic = MagneticField(self.settings)
         self.brush = Brush(self.settings)
         self.material_layer = render.MaterialLayer()
         self.hovered_cell: tuple[int, int] | None = None
@@ -143,6 +145,8 @@ class App:
             self.show_particles = not self.show_particles
         elif key == pygame.K_e:
             self.show_e_field = not self.show_e_field
+        elif key == pygame.K_b:
+            self.show_b_field = not self.show_b_field
         elif key in SLOWER_KEYS | FASTER_KEYS:
             self.change_speed(1 if key in FASTER_KEYS else -1)
         elif key == pygame.K_h:
@@ -216,6 +220,10 @@ class App:
         self.material_layer.draw(
             self.screen, self.grid, self.world.materials, s, show_ions=self.show_particles
         )
+        # Display B from the smoothed current: instantaneous electron jitter would flicker.
+        b_grid = self.magnetic.grid(self.world, self.current + battery.current_grid(self.world))
+        if self.show_b_field:
+            render.draw_magnetic_field(self.screen, self.grid, b_grid, s)
         render.draw_grid_lines(self.screen, self.grid, s)
         e_grid = self.electric.grid(self.world)
         if self.show_e_field:
@@ -230,15 +238,15 @@ class App:
             cells = self.brush.footprint(self.hovered_cell, self.grid)
             render.draw_brush_outline(self.screen, self.grid, cells, s)
         if self.hud_mode != "hidden":
-            render.draw_hud(self.screen, self.font, self.hud_sections(e_grid), s)
+            render.draw_hud(self.screen, self.font, self.hud_sections(e_grid, b_grid), s)
         pygame.display.flip()
         self.update_caption()
 
-    def hud_sections(self, e_grid: np.ndarray) -> list[list[tuple[str, str]]]:
+    def hud_sections(self, e_grid: np.ndarray, b_grid: np.ndarray) -> list[list[tuple[str, str]]]:
         """Info panel content: sections of (label, value) rows."""
         sections = [self.status_rows(e_grid)]
         if self.hovered_cell is not None:
-            sections.append(self.cell_rows(*self.hovered_cell, e_grid))
+            sections.append(self.cell_rows(*self.hovered_cell, e_grid, b_grid))
         if self.hud_mode == "full":
             sections.append(KEY_HELP)
         return sections
@@ -269,7 +277,9 @@ class App:
             rows.append(("|E| in wires", f"{np.hypot(*e_grid[conductive].T).mean():.4f} (mean)"))
         return rows
 
-    def cell_rows(self, col: int, row: int, e_grid: np.ndarray) -> list[tuple[str, str]]:
+    def cell_rows(
+        self, col: int, row: int, e_grid: np.ndarray, b_grid: np.ndarray
+    ) -> list[tuple[str, str]]:
         w, m = self.world, self.world.materials
         potential = self.electric.potential_grid(w)
         kind = Material(m.kind[col, row])
@@ -297,6 +307,7 @@ class App:
         rows += [
             ("V", f"{potential[col, row]:+.3g}"),
             ("E", f"({ex:+.3g}, {ey:+.3g})   |E| {np.hypot(ex, ey):.3g}"),
+            ("B", describe_b(b_grid[col, row])),
         ]
         if kind == Material.CONDUCTOR:
             ix, iy = self.current[col, row]
@@ -323,6 +334,13 @@ class App:
             f"Embloks | {self.clock.get_fps():.0f} fps | t={self.sim_time:.2f} | {state}"
             f" | grid {self.grid.cols}x{self.grid.rows}"
         )
+
+
+def describe_b(bz: float) -> str:
+    # Screen y points down, so +z (positive B_z) points into the screen.
+    if bz == 0:
+        return "0"
+    return f"{abs(bz):.3g}  " + ("into the screen" if bz > 0 else "out of the screen")
 
 
 def plural(count: int, noun: str) -> str:
