@@ -183,6 +183,10 @@ tests/                          # physics sanity tests
     opposite side), where the Poynting vector clearly flows from battery to resistor through
     the space around the wires. Others: screening around a test charge, parallel currents,
     series batteries.
+    Done: `scenes.py`, F1-F4 (battery + resistor, screening, series, open circuit). Tests check
+    the physics each scene demonstrates (S into the resistor, 3x current in series).
+    Measured for step 14: F1 loop current is +18% over Ohm's law; the battery's pump current
+    has a std of ~0.36 around a mean of ~0.1-0.2 (discrete jumps); electrons clump in wires.
 14. **Tune the physics for the textbook scene — no cheating.** It must stay a physics
     simulation that shows how real physics works, not an animation faked to match the picture.
     Known problems to investigate and fix at their cause:

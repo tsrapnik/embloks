@@ -126,7 +126,7 @@ class Settings:
     # Save slots (Ctrl/Shift + digit) live here, relative to the working directory.
     save_dir: str = "saves"
     # How long (real seconds) save/load messages stay in the info panel.
-    message_seconds: float = 3.0
+    message_seconds: float = 6.0
 
     hud_font_size: int = 20
     hud_text_color: tuple[int, int, int] = (220, 220, 230)

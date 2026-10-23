@@ -1,7 +1,9 @@
+import textwrap
+
 import numpy as np
 import pygame
 
-from embloks import battery, physics, render, storage
+from embloks import battery, physics, render, scenes, storage
 from embloks.config import Settings
 from embloks.fields import ElectricField, MagneticField, poynting
 from embloks.grid import Grid
@@ -12,6 +14,7 @@ from embloks.world import World
 
 DENSITY_UP_KEYS = {pygame.K_PLUS, pygame.K_EQUALS, pygame.K_KP_PLUS}
 DENSITY_DOWN_KEYS = {pygame.K_MINUS, pygame.K_KP_MINUS}
+SCENE_KEYS = {getattr(pygame, f"K_F{n + 1}"): n for n in range(len(scenes.SCENES))}
 DIGIT_KEYS = {getattr(pygame, f"K_{n}"): n for n in range(10)}
 TOOL_KEYS = {
     pygame.K_1: Tool.CONDUCTOR,
@@ -22,6 +25,8 @@ TOOL_KEYS = {
 LAYER_KEYS = {pygame.K_e: "E", pygame.K_b: "B", pygame.K_s: "S", pygame.K_p: "P"}
 SLOWER_KEYS = {pygame.K_COMMA, pygame.K_LESS}
 FASTER_KEYS = {pygame.K_PERIOD, pygame.K_GREATER}
+# Info panel messages wrap at this many characters.
+MESSAGE_WIDTH = 48
 # H cycles the info panel through these.
 HUD_MODES = ("full", "status", "hidden")
 KEY_HELP = [
@@ -38,6 +43,7 @@ KEY_HELP = [
     ("+  -", "grid density (clears)"),
     ("C", "clear all"),
     ("Ctrl / Shift + 0-9", "save to / load from slot"),
+    ("F1 - F4", "example scenes: battery + resistor / screening / series / open circuit"),
     ("H", "panel: full / status only / hidden"),
 ]
 PAINT_BUTTON = 1
@@ -57,13 +63,7 @@ class App:
         self.paused = False
         self.hud_mode = HUD_MODES[0]
         self.sim_speed = self.settings.default_sim_speed
-        self.layers = {
-            "E": Layer("E field"),
-            "B": Layer("B field"),
-            # Off by default: Poynting arrows sit on the same cells as the E arrows.
-            "S": Layer("S energy flow", visible=False),
-            "P": Layer("Particles", adjustable=False),
-        }
+        self.layers = default_layers()
         self.layer_panel = LayerPanel(list(self.layers.values()), self.font, self.settings)
         self.electric = ElectricField(self.settings)
         self.magnetic = MagneticField(self.settings)
@@ -115,6 +115,17 @@ class App:
         if new != s.grid_density:
             s.grid_density = new
             self.reset_scene()
+
+    def reset_layers(self) -> None:
+        """Put every display layer back to its start-up settings (same Layer objects)."""
+        for key, fresh in default_layers().items():
+            for name in ("visible", "gain", "opacity", "log_scale"):
+                setattr(self.layers[key], name, getattr(fresh, name))
+
+    def load_scene(self, index: int) -> None:
+        scene = scenes.SCENES[index]
+        scenes.load_scene(self, scene)
+        self.show_message(f"F{index + 1} {scene.title}: {scene.hint}")
 
     def save_slot(self, slot: int) -> None:
         path = storage.slot_path(self.settings.save_dir, slot)
@@ -182,6 +193,8 @@ class App:
                 self.save_slot(slot)
             else:
                 self.load_slot(slot)
+        elif key in SCENE_KEYS:
+            self.load_scene(SCENE_KEYS[key])
         elif key == pygame.K_ESCAPE:
             self.running = False
         elif key == pygame.K_SPACE:
@@ -357,7 +370,9 @@ class App:
         w = self.world
         rows = []
         if self.message and pygame.time.get_ticks() < self._message_until:
-            rows.append(("»", self.message))
+            # Wrapped, so a long message doesn't stretch the panel across the screen.
+            for i, text in enumerate(textwrap.wrap(self.message, MESSAGE_WIDTH)):
+                rows.append(("»" if i == 0 else "", text))
         rows += [
             ("Tool", tool),
             ("Brush", f"radius {b.radius}"),
@@ -433,6 +448,16 @@ class App:
             f"Embloks | {self.clock.get_fps():.0f} fps | t={self.sim_time:.2f} | {state}"
             f" | grid {self.grid.cols}x{self.grid.rows}"
         )
+
+
+def default_layers() -> dict[str, Layer]:
+    return {
+        "E": Layer("E field"),
+        "B": Layer("B field"),
+        # Off by default: Poynting arrows sit on the same cells as the E arrows.
+        "S": Layer("S energy flow", visible=False),
+        "P": Layer("Particles", adjustable=False),
+    }
 
 
 def describe_b(bz: float) -> str:

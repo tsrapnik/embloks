@@ -38,6 +38,7 @@ video driver). Configuration is the `[tool.pytest.ini_options]` section of `pypr
 | `C`                 | Clear the canvas                                              |
 | Ctrl + `0`-`9`      | Save the scene to a slot                                      |
 | Shift + `0`-`9`     | Load the scene from a slot                                    |
+| `F1` - `F4`         | Load an example scene (see *Example scenes*)                  |
 | `P`                 | Hide / show particles (ions and electrons)                    |
 | `E`                 | Hide / show electric field arrows                             |
 | `B`                 | Hide / show magnetic field colours                            |
@@ -188,6 +189,25 @@ Caveat: charges here are 3D point charges confined to a plane, so in a real 3D w
 energy also flows above and below the screen. The arrows show the direction and relative strength
 correctly, but adding up S around a resistor *in the plane* gives only part of the I²R power it
 dissipates (about 1/6 in a quick check).
+
+### Example scenes
+
+`F1`-`F4` load ready-made scenes. Each starts from rest, so you watch it settle. Each resets the
+physics settings and display layers to their defaults, then shows the layers that suit it.
+
+- **F1 Battery and resistor**: the textbook circuit. A rectangular loop of low-resistance wire,
+  the battery on the left (`+` up) and a high-resistance resistor on the right. Green S arrows show
+  the energy leaving the battery and flowing *through the space* inside and around the loop into
+  the resistor, while B (blue inside the loop: into the screen) shows the clockwise current.
+- **F2 Screening**: a neutral conductor between a `+5` and a `-5` test charge. Electrons shift
+  until the field inside the block is nearly zero, and field lines meet its surface at right
+  angles.
+- **F3 Batteries in series**: two identical loops, one driven by a single cell of EMF 2, the other
+  by three in series. Hover over their wires: the right loop carries three times the current.
+- **F4 Open circuit**: a battery whose two wires don't meet. Charge piles up at the wire ends until
+  they are one EMF apart. The gap at the top acts like a capacitor, with the field across it.
+
+Save your own variations to a slot with Ctrl + digit.
 
 ### Saving and loading
 
