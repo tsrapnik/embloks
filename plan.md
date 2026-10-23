@@ -106,7 +106,8 @@ src/embloks/
   __main__.py                   # entry: python -m embloks
   config.py                     # Settings dataclass (grid density, carriers_per_cell, c, dt, ...)
   app.py                        # main loop: input → physics substeps → render
-  grid.py                       # Grid: material id, resistance, emf, orientation arrays; cell<->world
+  grid.py                       # Grid: screen layout, cell <-> pixel mapping
+  materials.py                  # Materials: kind, resistance, emf, orientation arrays [col, row]
   connectivity.py               # islands (4-neighbour), wall tests incl. battery side walls
   particles.py                  # Particles SoA: pos, vel, charge, mass, mobile, softening
   fields.py                     # field_at(points, exclude) -> E, Bz; ion-field cache; poynting
@@ -122,7 +123,7 @@ tests/                          # physics sanity tests
    Esc quits, Space pauses.
 2. **Grid** — `Settings.grid_density`; draw grid lines; mouse → cell mapping; hovered cell highlight;
    `+/-` changes density (resets scene).
-3. **Materials & brush** — material arrays in `grid.py`; tools: vacuum (erase), conductor (with
+3. **Materials & brush** — material arrays in `materials.py`; tools: vacuum (erase), conductor (with
    resistance value), battery (with EMF, `R` rotates orientation); brush size; material colours,
    battery drawn with +/− marks.
 4. **Particles (static)** — painting spawns ion + n electrons, erasing removes them (rule §7);
