@@ -1,3 +1,5 @@
+from functools import lru_cache
+
 import numpy as np
 import pygame
 
@@ -68,14 +70,24 @@ def _draw_ions(surface: pygame.Surface, grid: Grid, materials: Materials, settin
         pygame.draw.circle(surface, settings.ion_color, centre, radius, width=max(1, size // 16))
 
 
+@lru_cache(maxsize=16)
+def _dot(radius: float, color: tuple[int, int, int]) -> pygame.Surface:
+    """A filled circle sprite, blitted once per electron."""
+    size = int(np.ceil(2 * radius)) + 1
+    dot = pygame.Surface((size, size), pygame.SRCALPHA)
+    pygame.draw.circle(dot, color, (size / 2, size / 2), radius)
+    return dot
+
+
 def draw_electrons(surface: pygame.Surface, grid: Grid, particles: Particles, settings: Settings):
     if len(particles) == 0:
         return
     xy = np.array([grid.origin_x, grid.origin_y]) + particles.pos * grid.cell_px
     radius = grid.cell_px * settings.electron_radius
     if len(particles) <= settings.max_electrons_as_circles and radius >= 1.5:
-        for x, y in xy:
-            pygame.draw.circle(surface, settings.electron_color, (x, y), radius)
+        dot = _dot(round(radius * 2) / 2, settings.electron_color)
+        corners = (xy - dot.get_width() / 2).astype(int).tolist()
+        surface.fblits([(dot, corner) for corner in corners])  # One batched call.
         return
     pixels = pygame.surfarray.pixels3d(surface)
     ix = np.clip(xy[:, 0].astype(int), 0, pixels.shape[0] - 1)
@@ -207,32 +219,38 @@ def draw_field_arrows(
     """
     cols, rows = cells
     magnitude = np.hypot(field[:, 0], field[:, 1])
-    t = layer.intensity(magnitude, *bounds)
     spacing = grid.cell_px * arrow_stride(grid, settings)
-    centre_x = grid.origin_x + (cols + 0.5) * grid.cell_px
-    centre_y = grid.origin_y + (rows + 0.5) * grid.cell_px
+    length = spacing * 0.9 * layer.intensity(magnitude, *bounds)
+    keep = np.flatnonzero(length >= 2)
+    if len(keep) == 0:
+        return
+    length, magnitude = length[keep], magnitude[keep]
+    # All arrow geometry at once: shaft from tail to tip, two barbs at +-30 degrees.
+    u = field[keep] / magnitude[:, None]
+    ux, uy = u[:, 0], u[:, 1]
+    centre = np.stack([grid.origin_x + (cols[keep] + 0.5) * grid.cell_px,
+                       grid.origin_y + (rows[keep] + 0.5) * grid.cell_px], axis=-1)
+    half = u * (length / 2)[:, None]
+    tail, tip = centre - half, centre + half
+    head = (length * 0.3)[:, None]
+    barb1 = tip - head * np.stack([0.866 * ux - 0.5 * uy, 0.866 * uy + 0.5 * ux], axis=-1)
+    barb2 = tip - head * np.stack([0.866 * ux + 0.5 * uy, 0.866 * uy - 0.5 * ux], axis=-1)
+    polylines = np.stack([tail, tip, barb1, tip, barb2], axis=1).tolist()
     dim, bright = np.array(colors[0]), np.array(colors[1])
-    # Arrows go on a colour-keyed overlay that is then blended at the layer's opacity.
-    overlay = pygame.Surface(surface.get_size())
-    overlay.set_colorkey((0, 0, 0))
-    overlay.set_alpha(round(255 * layer.opacity))
-    for i in np.flatnonzero(t > 0):
-        length = spacing * 0.9 * t[i]
-        if length < 2:
-            continue
-        ux, uy = field[i] / magnitude[i]
-        cx, cy = centre_x[i], centre_y[i]
-        tail = (cx - ux * length / 2, cy - uy * length / 2)
-        tip = (cx + ux * length / 2, cy + uy * length / 2)
-        color = dim + (bright - dim) * t[i]
-        pygame.draw.line(overlay, color, tail, tip)
-        head = length * 0.3
-        # Two barbs at +-30 degrees from the reversed direction.
-        for sx, sy in ((0.866, 0.5), (0.866, -0.5)):
-            bx = -(ux * sx - uy * sy) * head
-            by = -(uy * sx + ux * sy) * head
-            pygame.draw.line(overlay, color, tip, (tip[0] + bx, tip[1] + by))
-    surface.blit(overlay, (0, 0))
+    t = (length / (spacing * 0.9))[:, None]
+    shades = (dim + (bright - dim) * t).astype(int).tolist()
+
+    # Below full opacity, draw on a colour-keyed overlay blended at the layer's
+    # opacity. That blit costs a few ms, so fully opaque arrows go straight on.
+    target = surface
+    if layer.opacity < 1:
+        target = pygame.Surface(surface.get_size())
+        target.set_colorkey((0, 0, 0))
+        target.set_alpha(round(255 * layer.opacity))
+    for points, shade in zip(polylines, shades):
+        pygame.draw.lines(target, shade, False, points)
+    if target is not surface:
+        surface.blit(target, (0, 0))
 
 
 def draw_fixed_charges(

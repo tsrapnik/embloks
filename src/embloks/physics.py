@@ -3,7 +3,7 @@ import numpy as np
 from embloks.config import Settings
 from embloks.connectivity import Connectivity
 from embloks import battery
-from embloks.fields import ElectricField, MagneticField, interpolate
+from embloks.fields import CloudInCell, ElectricField, MagneticField
 
 # Particles stopped at a wall stay this far inside their cell.
 _WALL_GAP = 1e-6
@@ -104,12 +104,17 @@ def step(world, electric: ElectricField, dt: float, settings: Settings) -> int:
     h = dt / substeps
     magnetic = MagneticField(s)
     batteries = battery.current_grid(world)
+    m = world.materials
     for _ in range(substeps):
         cols, rows = p.cells()
-        field = interpolate(electric.grid(world), p.pos)
-        current = magnetic.electron_current(world) + batteries
-        bz = interpolate(magnetic.grid(world, current)[..., None], p.pos)[:, 0]
-        acc = (p.charge / p.mass)[:, None] * lorentz_field(field, p.vel, bz)
+        # One set of cloud-in-cell weights serves every deposit and read-back below.
+        cic = CloudInCell(p.pos, m.cols, m.rows)
+        current = magnetic.electron_current(world, cic) + batteries
+        grids = np.concatenate(
+            [electric.grid(world, cic), magnetic.grid(world, current)[..., None]], axis=-1
+        )
+        fields = cic.gather(grids)
+        acc = (p.charge / p.mass)[:, None] * lorentz_field(fields[:, :2], p.vel, fields[:, 2])
         vel = kick(p.vel, acc, damping_rates(world, cols, rows, s), h)
         move = vel * h
         # Safety net if velocity jumped within this substep: never move further than max_step.

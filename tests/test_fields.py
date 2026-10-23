@@ -142,3 +142,4 @@ def test_neutral_conductor_with_centred_electrons_has_no_field(world):
     centres = np.argwhere(np.ones((20, 14), dtype=bool)) + 0.5
     assert np.abs(electric.at(world, centres)).max() < 1e-12
     assert np.abs(electric.grid(world)).max() < 1e-12
+

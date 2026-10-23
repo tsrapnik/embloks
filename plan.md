@@ -170,6 +170,10 @@ tests/                          # physics sanity tests
     Done: `layers.py` (Layer state + clickable LayerPanel, top right, `L` toggles). Display E is
     an EMA in *simulated* time (frozen while paused, reset on paint); B from smoothed current.
 11. **Performance** — profile; FFT-convolution field solver if needed (§10).
+    Done: FFT solver was already in (steps 5–6). Profiling showed rendering dominated:
+    vectorised arrows + direct draw at full opacity + batched electron sprites (render 25 → 7 ms
+    at default grid). Physics: cloud-in-cell weights shared per substep, B combined in frequency
+    space. Fused/batched E+B FFT measured *slower* at large grids; not used.
 12. **Stretch** — save/load scenes (JSON/npz); optional FDTD/PIC field mode for induction & waves.
 
 ## Verification

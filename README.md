@@ -306,15 +306,27 @@ The window title shows the frame rate, simulation time, paused state and grid si
   stable for any resistance; a simple explicit update would blow up at high resistance.
 - **Substeps.** If electrons move fast, a tick is split into smaller steps so that nothing moves
   more than 0.4 cell at a time and can't tunnel through a one-cell wall.
-- **Drawing.** On fine grids only every n-th cell gets a field arrow, and with many electrons they
-  are drawn as single pixels written straight into the screen array.
-
-- **Batteries pick electrons along the wire.** A battery takes the electron nearest its source
-  terminal measured *along the wire* (cached breadth-first distances), never one that is only
-  close in a straight line, such as one just across the battery on the other side of a loop.
-
+- **Shared weights.** The cloud-in-cell weights are computed once per substep and reused for
+  depositing charge and current and for reading E and B back at every electron.
+- **B in one transform.** B's two convolution terms are combined in frequency space before
+  transforming back, saving an inverse FFT. (Fusing E and B into one batched FFT was tried and
+  measured slower, so it isn't done.)
+- **Drawing.** Arrow geometry is computed for all arrows at once with NumPy, then drawn with one
+  call per arrow; layers at full opacity draw straight to the screen, and only translucent ones
+  go through an overlay. Electrons are one pre-drawn dot sprite blitted in a single batched
+  call, or single pixels written into the screen array when there are very many. On fine grids
+  only every n-th cell gets a field arrow.
 - **Large time step.** Drag is stable at any step and the electron motion is smooth, so a tick
   can cover 1/30 time unit; results were checked to be identical up to 1/8.
 
-The result: at the default grid a physics tick takes about 0.6 ms, so 8× speed (4 ticks per
-frame) runs at a full 60 fps. A 100×80 grid with ~10,000 electrons manages ~37 fps at 8×.
+Typical frame times at the default 8× speed, all field layers on:
+
+| Grid      | Electrons | Frame    |
+|-----------|-----------|----------|
+| 40 × 32   | ~1,500    | ~10 ms   |
+| 100 × 80  | ~10,000   | ~27 ms   |
+| 200 × 160 | ~38,000   | ~100 ms  |
+
+On the largest grids the FFTs dominate (physics and display alike); the simulation then runs
+slower than the chosen speed instead of freezing.
+

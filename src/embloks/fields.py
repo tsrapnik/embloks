@@ -137,7 +137,8 @@ class GridKernel:
         """
         jx = fft.rfft2(current_grid[..., 0], s=self.shape)
         jy = fft.rfft2(current_grid[..., 1], s=self.shape)
-        return self._apply(jx, self._ky) - self._apply(jy, self._kx)
+        # Combine both terms before transforming back (it's linear): one inverse FFT.
+        return fft.irfft2(jx * self._ky - jy * self._kx, s=self.shape)[self._keep]
 
 
 @lru_cache(maxsize=8)
@@ -145,46 +146,52 @@ def grid_kernel(cols: int, rows: int, softening: float, k: float = 1.0) -> GridK
     return GridKernel(cols, rows, softening, k)
 
 
-def _cic_weights(positions: np.ndarray, cols: int, rows: int):
-    """The 4 cell centres around each position and their bilinear weights.
+class CloudInCell:
+    """Bilinear (cloud-in-cell) weights of particles onto the 4 nearest cell centres.
 
-    Yields (flat_index, weight) per corner. Corners outside the grid are clamped
-    onto the edge cells, so weights per position still sum to 1.
+    Computed once per particle configuration, then reused to deposit charge and
+    current and to read fields back. Using identical weights both ways makes the
+    grid force on a particle from its own charge cancel exactly (the Coulomb and
+    Biot-Savart kernels are antisymmetric). Corners outside the grid are clamped
+    onto the edge cells, so weights per particle still sum to 1.
     """
-    u = positions[:, 0] - 0.5
-    v = positions[:, 1] - 0.5
-    c0, r0 = np.floor(u).astype(np.int64), np.floor(v).astype(np.int64)
-    fu, fv = u - c0, v - r0
-    for dc, wc in ((0, 1 - fu), (1, fu)):
-        c = np.clip(c0 + dc, 0, cols - 1)
-        for dr, wr in ((0, 1 - fv), (1, fv)):
-            r = np.clip(r0 + dr, 0, rows - 1)
-            yield c * rows + r, wc * wr
+
+    def __init__(self, positions: np.ndarray, cols: int, rows: int):
+        self.shape = (cols, rows)
+        u = positions[:, 0] - 0.5
+        v = positions[:, 1] - 0.5
+        c0, r0 = np.floor(u).astype(np.int64), np.floor(v).astype(np.int64)
+        fu, fv = u - c0, v - r0
+        index, weight = [], []
+        for dc, wc in ((0, 1 - fu), (1, fu)):
+            c = np.clip(c0 + dc, 0, cols - 1)
+            for dr, wr in ((0, 1 - fv), (1, fv)):
+                index.append(c * rows + np.clip(r0 + dr, 0, rows - 1))
+                weight.append(wc * wr)
+        # Shape (4, particles): one row per corner.
+        self.index = np.array(index)
+        self.weight = np.array(weight)
+
+    def deposit(self, values: np.ndarray) -> np.ndarray:
+        """Spread one value per particle over the grid, shape (cols, rows). Conserves the sum."""
+        size = self.shape[0] * self.shape[1]
+        flat = np.bincount(self.index.ravel(), (self.weight * values).ravel(), minlength=size)
+        return flat.reshape(self.shape)
+
+    def gather(self, grid: np.ndarray) -> np.ndarray:
+        """Read a (cols, rows, d) grid at the particles, shape (particles, d)."""
+        flat = grid.reshape(self.shape[0] * self.shape[1], -1)
+        return (flat[self.index] * self.weight[..., None]).sum(axis=0)
 
 
 def deposit(positions: np.ndarray, charges: np.ndarray, cols: int, rows: int) -> np.ndarray:
-    """Spread point charges over the 4 nearest cell centres (cloud-in-cell).
-
-    Charge is conserved: weight that would land outside the grid stays on the edge cells.
-    """
-    grid = np.zeros(cols * rows)
-    for index, weight in _cic_weights(positions, cols, rows):
-        grid += np.bincount(index, charges * weight, minlength=cols * rows)
-    return grid.reshape(cols, rows)
+    """Spread point charges over the 4 nearest cell centres (see CloudInCell)."""
+    return CloudInCell(positions, cols, rows).deposit(charges)
 
 
 def interpolate(grid: np.ndarray, positions: np.ndarray) -> np.ndarray:
-    """Read a (cols, rows, d) grid at positions with the same weights `deposit` uses.
-
-    Using identical weights both ways makes the grid force on a particle from
-    its own charge cancel exactly (the Coulomb kernel is antisymmetric).
-    """
-    cols, rows = grid.shape[:2]
-    flat = grid.reshape(cols * rows, -1)
-    out = np.zeros((len(positions), flat.shape[1]))
-    for index, weight in _cic_weights(positions, cols, rows):
-        out += flat[index] * weight[:, None]
-    return out
+    """Read a (cols, rows, d) grid at positions with the same weights `deposit` uses."""
+    return CloudInCell(positions, *grid.shape[:2]).gather(grid)
 
 
 class ElectricField:
@@ -226,24 +233,28 @@ class ElectricField:
         self._update_static(world)
         return self._static_grid
 
-    def _electron_charge(self, world) -> np.ndarray:
+    def _electron_charge(self, world, cic: CloudInCell | None) -> np.ndarray:
         m, p = world.materials, world.particles
-        return deposit(p.pos, p.charge, m.cols, m.rows)
+        cic = cic or CloudInCell(p.pos, m.cols, m.rows)
+        return cic.deposit(p.charge)
 
-    def electron_grid(self, world) -> np.ndarray:
-        """Approximate electron field at every cell centre, shape (cols, rows, 2)."""
+    def electron_grid(self, world, cic: CloudInCell | None = None) -> np.ndarray:
+        """Approximate electron field at every cell centre, shape (cols, rows, 2).
+
+        Pass `cic` (weights of the current electron positions) to reuse it.
+        """
         kernel = self._kernel(world, self.settings.conductor_softening)
-        return kernel.field(self._electron_charge(world))
+        return kernel.field(self._electron_charge(world, cic))
 
-    def grid(self, world) -> np.ndarray:
+    def grid(self, world, cic: CloudInCell | None = None) -> np.ndarray:
         """Total field at every cell centre, shape (cols, rows, 2)."""
-        return self.static_grid(world) + self.electron_grid(world)
+        return self.static_grid(world) + self.electron_grid(world, cic)
 
     def potential_grid(self, world) -> np.ndarray:
         """Total potential at every cell centre, shape (cols, rows); zero far away."""
         self._update_static(world)
         kernel = self._kernel(world, self.settings.conductor_softening)
-        return self._static_potential + kernel.potential(self._electron_charge(world))
+        return self._static_potential + kernel.potential(self._electron_charge(world, None))
 
     def at(self, world, points: np.ndarray) -> np.ndarray:
         """Exact total field at arbitrary points (M, 2), all sources summed directly."""
@@ -277,12 +288,13 @@ class MagneticField:
         kernel = grid_kernel(m.cols, m.rows, s.conductor_softening, s.coulomb_k)
         return kernel.curl(current) / s.speed_of_light**2
 
-    def electron_current(self, world) -> np.ndarray:
+    def electron_current(self, world, cic: CloudInCell | None = None) -> np.ndarray:
         """Electron current q*v deposited onto cell centres (cloud-in-cell), (cols, rows, 2)."""
         m, p = world.materials, world.particles
-        jx = deposit(p.pos, p.charge * p.vel[:, 0], m.cols, m.rows)
-        jy = deposit(p.pos, p.charge * p.vel[:, 1], m.cols, m.rows)
-        return np.stack([jx, jy], axis=-1)
+        cic = cic or CloudInCell(p.pos, m.cols, m.rows)
+        return np.stack(
+            [cic.deposit(p.charge * p.vel[:, 0]), cic.deposit(p.charge * p.vel[:, 1])], axis=-1
+        )
 
 
 def poynting(e_grid: np.ndarray, bz: np.ndarray, settings: Settings) -> np.ndarray:
