@@ -1,4 +1,6 @@
+import math
 import textwrap
+import time
 
 import numpy as np
 import pygame
@@ -73,6 +75,9 @@ class App:
         # Short feedback (e.g. "saved to slot 2") and when it disappears (pygame ticks, ms).
         self.message = ""
         self._message_until = 0
+        # Low-pass filters for the info panel's numbers: world-wide and hovered-cell ones.
+        self.status_readout = ReadoutFilter(self.settings.readout_smoothing_seconds)
+        self.cell_readout = ReadoutFilter(self.settings.readout_smoothing_seconds)
         self.reset_scene()
 
     def reset_scene(self) -> None:
@@ -351,6 +356,12 @@ class App:
         self, e_grid: np.ndarray, b_grid: np.ndarray, s_grid: np.ndarray
     ) -> list[list[tuple[str, str]]]:
         """Info panel content: sections of (label, value) rows."""
+        # Readings restart from the exact value when the scene is edited or the mouse
+        # moves to another cell, so nothing slides over from a stale value.
+        w = self.world
+        scene_key = (id(w), w.materials.version, w.fixed_version)
+        self.status_readout.begin(scene_key)
+        self.cell_readout.begin((scene_key, self.hovered_cell))
         sections = [self.status_rows(e_grid)]
         if self.hovered_cell is not None:
             sections.append(self.cell_rows(*self.hovered_cell, e_grid, b_grid, s_grid))
@@ -386,7 +397,8 @@ class App:
         ]
         conductive = w.materials.conductive
         if conductive.any():
-            rows.append(("|E| in wires", f"{np.hypot(*e_grid[conductive].T).mean():.4f} (mean)"))
+            mean_e = self.status_readout("E in wires", np.hypot(*e_grid[conductive].T).mean())
+            rows.append(("|E| in wires", f"{mean_e:.4f} (mean)"))
         return rows
 
     def cell_rows(
@@ -412,19 +424,20 @@ class App:
         if here.any():
             what += f"  ·  test charge {w.fixed_charge[here][0]:+g} e"
 
-        ex, ey = e_grid[col, row]
-        sx, sy = s_grid[col, row]
+        smooth = self.cell_readout
+        ex, ey = smooth("E", e_grid[col, row])
+        sx, sy = smooth("S", s_grid[col, row])
         rows = [(f"Cell {col},{row}", what)]
         if kind == Material.BATTERY:
             rows.append(("Stack", self.describe_stack((col, row), potential)))
         rows += [
-            ("V", f"{potential[col, row]:+.3g}"),
+            ("V", f"{smooth('V', potential[col, row]):+.3g}"),
             ("E", f"({ex:+.3g}, {ey:+.3g})   |E| {np.hypot(ex, ey):.3g}"),
-            ("B", describe_b(b_grid[col, row])),
+            ("B", describe_b(smooth("B", b_grid[col, row]))),
             ("S", f"({sx:+.3g}, {sy:+.3g})   |S| {np.hypot(sx, sy):.3g}"),
         ]
         if kind == Material.CONDUCTOR:
-            ix, iy = self.current[col, row]
+            ix, iy = smooth("I", self.current[col, row])
             rows.append(("I", f"({ix:+.3g}, {iy:+.3g})   |I| {np.hypot(ix, iy):.3g}"))
         return rows
 
@@ -436,11 +449,9 @@ class App:
             return f"EMF {abs(stack.emf):g}  ·  not connected"
         # Report from the stack's own + terminal, so both numbers come out positive.
         sign = 1 if stack.emf >= 0 else -1
-        current = sign * self.world.pump_current.get(stack, 0.0)
-        return (
-            f"EMF {abs(stack.emf):g}  ·  terminals {sign * (v_high - v_low):.3g} V"
-            f"  ·  current {current:.3g}"
-        )
+        voltage = self.cell_readout("terminal V", sign * (v_high - v_low))
+        current = self.cell_readout("battery I", sign * self.world.pump_current.get(stack, 0.0))
+        return f"EMF {abs(stack.emf):g}  ·  terminals {voltage:.3g} V  ·  current {current:.3g}"
 
     def update_caption(self) -> None:
         state = "paused" if self.paused else "running"
@@ -448,6 +459,40 @@ class App:
             f"Embloks | {self.clock.get_fps():.0f} fps | t={self.sim_time:.2f} | {state}"
             f" | grid {self.grid.cols}x{self.grid.rows}"
         )
+
+
+class ReadoutFilter:
+    """Exponential low-pass filter for numbers shown in the info panel.
+
+    Works in real time, so readings settle at a readable pace at any simulation
+    speed. Call begin() once per frame with a key describing what is being
+    measured; when the key changes, all readings restart from their exact value.
+    """
+
+    def __init__(self, seconds: float, clock=time.perf_counter):
+        self.seconds = seconds
+        self.clock = clock
+        self._values: dict[str, np.ndarray] = {}
+        self._key = None
+        self._last_time: float | None = None
+        self._alpha = 1.0
+
+    def begin(self, key) -> None:
+        now = self.clock()
+        if key != self._key or self._last_time is None or self.seconds <= 0:
+            self._values.clear()
+            self._alpha = 1.0
+        else:
+            self._alpha = 1 - math.exp(-(now - self._last_time) / self.seconds)
+        self._key = key
+        self._last_time = now
+
+    def __call__(self, name: str, value):
+        value = np.asarray(value, dtype=float)
+        previous = self._values.get(name)
+        filtered = value if previous is None else previous + self._alpha * (value - previous)
+        self._values[name] = filtered
+        return float(filtered) if filtered.ndim == 0 else filtered
 
 
 def default_layers() -> dict[str, Layer]:

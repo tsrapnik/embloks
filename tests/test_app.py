@@ -207,3 +207,38 @@ def test_displayed_e_field_is_smoothed_but_follows_edits_immediately(app):
     app.sim_time += 0.01
     shown, actual = app.display_e_field(), app.electric.grid(app.world)
     assert not np.allclose(shown, actual)
+
+
+def test_readout_filter_smooths_and_restarts_on_a_new_key():
+    from embloks.app import ReadoutFilter
+
+    now = [0.0]
+    readout = ReadoutFilter(0.5, clock=lambda: now[0])
+    readout.begin("cell A")
+    assert readout("V", 1.0) == 1.0  # First reading is exact.
+    now[0] += 0.5  # One time constant later...
+    readout.begin("cell A")
+    assert readout("V", 0.0) == pytest.approx(np.exp(-1))  # ...it moved 1 - 1/e of the way.
+    np.testing.assert_allclose(readout("E", [1.0, -2.0]), [1.0, -2.0])  # New name: exact.
+    now[0] += 0.5
+    readout.begin("cell B")  # Moving to another cell restarts every reading.
+    assert readout("V", 5.0) == 5.0
+
+
+def test_info_panel_numbers_are_filtered_while_hovering(app):
+    click(app, (3, 3), 1)
+    app.hovered_cell = (3, 3)
+    now = [0.0]
+    app.cell_readout.clock = lambda: now[0]
+    app.render()
+    first = app.cell_readout._values["V"].copy()
+    app.world.place_charges(np.array([4]), np.array([3]), 5)  # Editing restarts readings...
+    app.render()
+    assert app.cell_readout._values["V"] != first
+    app.world.particles.pos[:] += 0.2  # ...but electron motion is smoothed.
+    now[0] += 0.05
+    before = float(app.cell_readout._values["V"])
+    exact = app.electric.potential_grid(app.world)[3, 3]
+    app.render()
+    shown = float(app.cell_readout._values["V"])
+    assert abs(shown - before) < abs(exact - before)

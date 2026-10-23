@@ -313,6 +313,14 @@ the cell under the mouse it shows:
   charge would flow, opposite to the electrons), averaged over 2 time units
   (`current_smoothing_time`), like an ammeter's response time.
 
+All numbers in the panel (V, E, B, S, I, the battery's terminal voltage and current, and the
+mean |E| in wires) are additionally low-pass filtered over about one *real* second
+(`readout_smoothing_seconds`), so they are readable at any simulation speed instead of
+flickering. When you move to another cell or edit the scene, the readings restart from the
+exact value, so they never slide over from a stale one. Only the displayed numbers are
+filtered, not the physics. E inside a wire still moves a little: it is small on average and
+fluctuates slowly as single electrons pass.
+
 The window title shows the frame rate, simulation time, paused state and grid size
 (columns x rows).
 

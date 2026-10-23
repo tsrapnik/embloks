@@ -127,6 +127,10 @@ class Settings:
     # Above this many electrons, draw single pixels instead of circles (much faster).
     max_electrons_as_circles: int = 4000
 
+    # Numbers in the info panel are low-pass filtered over about this many real seconds,
+    # so they are readable instead of flickering. 0 shows the instantaneous values.
+    readout_smoothing_seconds: float = 1.0
+
     # Save slots (Ctrl/Shift + digit) live here, relative to the working directory.
     save_dir: str = "saves"
     # How long (real seconds) save/load messages stay in the info panel.
