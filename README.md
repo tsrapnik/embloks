@@ -41,6 +41,7 @@ video driver). Configuration is the `[tool.pytest.ini_options]` section of `pypr
 | `H`                 | Info panel: full / status only / hidden                       |
 | `+` / `-`           | Finer / coarser grid (resets the scene)                       |
 | Space               | Pause / resume physics                                        |
+| `,` / `.` (`<` `>`) | Slower / faster simulation (¼× to 64×, default 8×)            |
 | Esc                 | Quit                                                          |
 
 **Erasing:** right-click decides once, when you press the button: if a test charge is under the
@@ -139,7 +140,17 @@ random direction remain. More `carriers_per_cell` makes it smoother.
 Newly painted cells get their electrons right on top of their ions, so a fresh conductor is
 neutral everywhere and has no field until something disturbs it.
 
-Time: the simulation runs at about one time unit per real second (`dt` per tick in config.py).
+### Simulation speed
+
+Physics advances in fixed ticks of `dt` = 1/30 time unit. Electrons respond within a few time
+units, but a circuit needs tens of units to settle: the battery has to build up small surface
+charges along the wires through their resistance (like charging a capacitor through a
+resistor), and only then does the current flow evenly around the loop. So by default the
+simulation runs at **8×**: 8 time units per real second, and a typical loop reaches its steady
+current within about 10 seconds. `,` and `.` halve or double the speed (¼× to 64×); the info
+panel shows it. If the computer can't keep up (large grids, high speeds) the simulation runs
+slower than chosen rather than freezing; the window title shows the frame rate and simulated
+time.
 
 ### Batteries
 
@@ -163,7 +174,8 @@ vanish on the `+` side and appear on the `-` side.
   of N cells of resistance R has resistance N·R. Very small loops carry a little more, because
   electrons cut the corners and the wire is effectively shorter than its cell count.
 - **Patience:** the surface charges that steer the current around the loop take a while to
-  build up, about a minute for a long loop of resistance-1 wire, less for lower resistance.
+  build up: about 60 time units for a long loop of resistance-1 wire (under 10 seconds at the
+  default 8× speed), less for lower resistance. Speed up with `.` if it's still too slow.
 - **Limits:** a battery whose terminals aren't both wired does nothing. Very high EMFs on
   small circuits empty the wires of electrons, which is why EMF stops at 10.
 
@@ -228,5 +240,8 @@ The window title shows the frame rate, simulation time, paused state and grid si
   terminal measured *along the wire* (cached breadth-first distances), never one that is only
   close in a straight line, such as one just across the battery on the other side of a loop.
 
-The result: at the default grid a physics tick takes about 1 ms; on a 100×80 grid with ~10,000
-electrons about 3 ms, and a frame about 20 ms.
+- **Large time step.** Drag is stable at any step and the electron motion is smooth, so a tick
+  can cover 1/30 time unit; results were checked to be identical up to 1/8.
+
+The result: at the default grid a physics tick takes about 0.6 ms, so 8× speed (4 ticks per
+frame) runs at a full 60 fps. A 100×80 grid with ~10,000 electrons manages ~37 fps at 8×.

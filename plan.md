@@ -101,6 +101,8 @@ from the materials, so ions and cells can never get out of sync. `c` is a tunabl
 them visible). Changing grid density resets the scene (or nearest-neighbour resample — later).
 
 ### 10. Performance
+*Time to equilibrium:* circuits settle on an RC time scale (tens of time units), so the app has
+a simulation-speed control (default 8×) and dt = 1/30 (results unchanged up to dt = 1/8).
 Direct summation is O(particles × (cells + particles)). Mitigations, in order:
 1. Ion field is static → cache it, recompute only on paint.
 2. Fully vectorised numpy (chunked to bound memory).

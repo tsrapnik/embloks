@@ -19,8 +19,27 @@ def press(app: App, key: int) -> None:
 
 
 def test_fixed_timestep_runs_ticks_matching_elapsed_time(app):
+    app.sim_speed = 1
     app.advance(app.settings.dt * 3.5)
     assert app.tick_count == 3
+
+
+def test_speed_multiplies_simulated_time_per_real_second(app):
+    app.sim_speed = 4
+    app.advance(app.settings.dt * 3.5)
+    assert app.tick_count == 14
+
+
+def test_comma_and_period_step_through_speeds(app):
+    speeds = app.settings.sim_speeds
+    for _ in range(20):
+        press(app, pygame.K_PERIOD)
+    assert app.sim_speed == speeds[-1]
+    press(app, pygame.K_COMMA)
+    assert app.sim_speed == speeds[-2]
+    for _ in range(20):
+        press(app, pygame.K_COMMA)
+    assert app.sim_speed == speeds[0]
 
 
 def test_slow_frame_is_capped(app):

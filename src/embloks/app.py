@@ -16,6 +16,8 @@ TOOL_KEYS = {
     pygame.K_2: Tool.BATTERY,
     pygame.K_3: Tool.CHARGE,
 }
+SLOWER_KEYS = {pygame.K_COMMA, pygame.K_LESS}
+FASTER_KEYS = {pygame.K_PERIOD, pygame.K_GREATER}
 # H cycles the info panel through these.
 HUD_MODES = ("full", "status", "hidden")
 KEY_HELP = [
@@ -27,6 +29,7 @@ KEY_HELP = [
     ("[  ]  wheel", "brush size"),
     ("E  P", "show field arrows / particles"),
     ("Space", "pause"),
+    ("<  >", "slower / faster simulation (the , and . keys)"),
     ("+  -", "grid density (clears)"),
     ("C", "clear all"),
     ("H", "panel: full / status only / hidden"),
@@ -47,6 +50,7 @@ class App:
         self.running = True
         self.paused = False
         self.hud_mode = HUD_MODES[0]
+        self.sim_speed = self.settings.default_sim_speed
         self.show_particles = True
         self.show_e_field = True
         self.electric = ElectricField(self.settings)
@@ -81,6 +85,11 @@ class App:
         if new != s.grid_density:
             s.grid_density = new
             self.reset_scene()
+
+    def change_speed(self, steps: int) -> None:
+        speeds = self.settings.sim_speeds
+        index = min(range(len(speeds)), key=lambda i: abs(speeds[i] - self.sim_speed))
+        self.sim_speed = speeds[max(0, min(len(speeds) - 1, index + steps))]
 
     def run(self) -> None:
         while self.running:
@@ -134,6 +143,8 @@ class App:
             self.show_particles = not self.show_particles
         elif key == pygame.K_e:
             self.show_e_field = not self.show_e_field
+        elif key in SLOWER_KEYS | FASTER_KEYS:
+            self.change_speed(1 if key in FASTER_KEYS else -1)
         elif key == pygame.K_h:
             self.hud_mode = HUD_MODES[(HUD_MODES.index(self.hud_mode) + 1) % len(HUD_MODES)]
 
@@ -175,12 +186,12 @@ class App:
         self._stroke_cell = cell
 
     def advance(self, frame_seconds: float) -> None:
-        """Run as many fixed-size physics ticks as fit in the elapsed real time."""
+        """Run as many fixed-size physics ticks as fit in the elapsed (sped-up) time."""
         if self.paused:
             self._accumulator = 0.0
             return
         dt = self.settings.dt
-        self._accumulator += frame_seconds
+        self._accumulator += frame_seconds * self.sim_speed
         ticks = 0
         while self._accumulator >= dt and ticks < self.settings.max_ticks_per_frame:
             self.step(dt)
@@ -245,6 +256,7 @@ class App:
         rows = [
             ("Tool", tool),
             ("Brush", f"radius {b.radius}"),
+            ("Speed", f"{self.sim_speed:g}× (simulated time per second)" + ("  ·  PAUSED" if self.paused else "")),
             (
                 "World",
                 f"{plural(len(w.particles), 'electron')}"

@@ -7,11 +7,17 @@ class Settings:
     window_height: int = 800
     background_color: tuple[int, int, int] = (18, 18, 24)
 
-    # Render rate and fixed physics timestep (simulation time per tick).
+    # Render rate and fixed physics timestep (simulation time per tick). Results were
+    # checked to be unchanged up to dt = 1/8; 1/30 leaves a safety margin.
     fps: int = 60
-    dt: float = 1 / 120
-    # Upper bound on physics ticks per frame, so a slow frame can't spiral.
-    max_ticks_per_frame: int = 8
+    dt: float = 1 / 30
+    # Simulation time per real second, changed live with , and . keys. Circuits need
+    # tens of time units to settle, so the default runs fast.
+    sim_speeds: tuple[float, ...] = (0.25, 0.5, 1, 2, 4, 8, 16, 32, 64)
+    default_sim_speed: float = 8
+    # Upper bound on physics ticks per frame; beyond it the simulation runs slower
+    # than the chosen speed instead of freezing the app.
+    max_ticks_per_frame: int = 32
 
     # Number of grid columns; rows follow from the window aspect ratio.
     grid_density: int = 40
