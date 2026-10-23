@@ -1,3 +1,4 @@
+import re
 from functools import lru_cache
 
 import numpy as np
@@ -143,46 +144,74 @@ def draw_brush_outline(
         pygame.draw.rect(surface, settings.hover_color, grid.cell_rect(col, row), width=1)
 
 
+# A value is either one string or a tuple of fields drawn in fixed columns.
+HudValue = str | tuple[str, ...]
+# Widest number the readouts produce (see app.number); sizes number columns.
+_WIDEST_NUMBER = "-0.0000e-00"
+_NUMBER = re.compile(r"^[+-]?(\d+\.?\d*|\.\d+)(e[+-]?\d+)?$")
+
+
 def draw_hud(
     surface: pygame.Surface,
     font: pygame.font.Font,
-    sections: list[list[tuple[str, str]]],
+    sections: list[list[tuple[str, HudValue]]],
     settings: Settings,
 ) -> None:
     """Info panel at the top-left: sections of (label, value) rows, split by thin rules.
 
     Labels form their own column in an accent colour, so it is always clear which
-    text belongs to which label.
+    text belongs to which label. Tuple values are laid out as a table within their
+    section: field i of every row shares column i. Number columns are as wide as the
+    widest possible number and right-aligned, so digits stay put while values change.
     """
-    pad, label_gap, row_gap, section_gap = 10, 14, 3, 14
-    rendered = [
-        [
-            (font.render(label, True, settings.hud_label_color),
-             font.render(value, True, settings.hud_text_color))
-            for label, value in section
-        ]
-        for section in sections
-        if section
-    ]
-    label_width = max(lab.get_width() for section in rendered for lab, _ in section)
-    value_x = pad + label_width + label_gap
-    width = value_x + max(val.get_width() for section in rendered for _, val in section) + pad
-    line_height = font.get_linesize() + row_gap
-    rows = sum(len(section) for section in rendered)
-    height = 2 * pad + rows * line_height + (len(rendered) - 1) * section_gap
+    pad, label_gap, field_gap, row_gap, section_gap = 10, 14, 12, 3, 14
+    text_color, label_color = settings.hud_text_color, settings.hud_label_color
+    number_width = font.size(_WIDEST_NUMBER)[0]
+    sections = [section for section in sections if section]
 
+    label_width = max(font.size(label)[0] for section in sections for label, _ in section)
+    value_x = pad + label_width + label_gap
+    layouts = []  # Per section: column widths for its tuple rows.
+    value_width = 0
+    for section in sections:
+        columns: list[int] = []
+        for _, value in section:
+            if isinstance(value, str):
+                value_width = max(value_width, font.size(value)[0])
+                continue
+            for i, field in enumerate(value):
+                width = number_width if _NUMBER.match(field) else font.size(field)[0]
+                if i == len(columns):
+                    columns.append(width)
+                columns[i] = max(columns[i], width)
+        layouts.append(columns)
+        value_width = max(value_width, sum(columns) + field_gap * max(0, len(columns) - 1))
+
+    width = value_x + value_width + pad
+    line_height = font.get_linesize() + row_gap
+    rows = sum(len(section) for section in sections)
+    height = 2 * pad + rows * line_height + (len(sections) - 1) * section_gap
     box = pygame.Surface((width, height), pygame.SRCALPHA)
     box.fill(settings.hud_background)
     surface.blit(box, (0, 0))
+
     y = pad
-    for i, section in enumerate(rendered):
+    for i, (section, columns) in enumerate(zip(sections, layouts)):
         if i:
             rule_y = y + section_gap // 2 - row_gap
             pygame.draw.line(surface, settings.hud_rule_color, (pad, rule_y), (width - pad, rule_y))
             y += section_gap
         for label, value in section:
-            surface.blit(label, (pad, y))
-            surface.blit(value, (value_x, y))
+            surface.blit(font.render(label, True, label_color), (pad, y))
+            if isinstance(value, str):
+                surface.blit(font.render(value, True, text_color), (value_x, y))
+            else:
+                x = value_x
+                for field, column in zip(value, columns):
+                    text = font.render(field, True, text_color)
+                    right_align = _NUMBER.match(field)
+                    surface.blit(text, (x + column - text.get_width() if right_align else x, y))
+                    x += column + field_gap
             y += line_height
 
 

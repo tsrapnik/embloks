@@ -427,21 +427,27 @@ class App:
         smooth = self.cell_readout
         ex, ey = smooth("E", e_grid[col, row])
         sx, sy = smooth("S", s_grid[col, row])
-        rows = [(f"Cell {col},{row}", what)]
+        # Coordinates go in the value, not the label: a changing label width would shift
+        # every value in the panel.
+        rows = [("Cell", f"{col}, {row}  ·  {what}")]
         if kind == Material.BATTERY:
             rows.append(("Stack", self.describe_stack((col, row), potential)))
+        # Fixed columns (x, y, |magnitude|, note) so numbers never shift as they change.
+        bz = smooth("B", b_grid[col, row])
         rows += [
-            ("V", f"{smooth('V', potential[col, row]):+.3g}"),
-            ("E", f"({ex:+.3g}, {ey:+.3g})   |E| {np.hypot(ex, ey):.3g}"),
-            ("B", describe_b(smooth("B", b_grid[col, row]))),
-            ("S", f"({sx:+.3g}, {sy:+.3g})   |S| {np.hypot(sx, sy):.3g}"),
+            ("V", (number(smooth("V", potential[col, row])),)),
+            ("E", (number(ex), number(ey), "|E|", number(np.hypot(ex, ey), signed=False))),
+            ("B", ("", "", "|B|", number(abs(bz), signed=False), describe_b(bz))),
+            ("S", (number(sx), number(sy), "|S|", number(np.hypot(sx, sy), signed=False))),
         ]
         if kind == Material.CONDUCTOR:
             ix, iy = smooth("I", self.current[col, row])
-            rows.append(("I", f"({ix:+.3g}, {iy:+.3g})   |I| {np.hypot(ix, iy):.3g}  (this cell)"))
+            rows.append(("I", (number(ix), number(iy), "|I|", number(np.hypot(ix, iy), signed=False),
+                               "this cell")))
             total, width = self.wire_current(col, row)
             total = smooth("wire I", total)
-            rows.append(("Wire I", f"{abs(total):.3g}  (across {plural(width, 'cell')} of wire)"))
+            rows.append(("Wire I", ("", "", "|I|", number(abs(total), signed=False),
+                                    f"across {plural(width, 'cell')} of wire")))
         return rows
 
     def wire_current(self, col: int, row: int) -> tuple[float, int]:
@@ -472,7 +478,7 @@ class App:
         sign = 1 if stack.emf >= 0 else -1
         voltage = self.cell_readout("terminal V", sign * (v_high - v_low))
         current = self.cell_readout("battery I", sign * self.world.pump_current.get(stack, 0.0))
-        return f"EMF {abs(stack.emf):g}  ·  terminals {voltage:.3g} V  ·  current {current:.3g}"
+        return f"EMF {abs(stack.emf):g}  ·  terminals {number(voltage)} V  ·  current {number(current)}"
 
     def update_caption(self) -> None:
         state = "paused" if self.paused else "running"
@@ -530,10 +536,23 @@ def default_layers() -> dict[str, Layer]:
 
 
 def describe_b(bz: float) -> str:
-    # Screen y points down, so +z (positive B_z) points into the screen.
+    """Direction of B_z in words. Screen y points down, so +z points into the screen."""
     if bz == 0:
-        return "0"
-    return f"{abs(bz):.3g}  " + ("into the screen" if bz > 0 else "out of the screen")
+        return ""
+    return "into the screen" if bz > 0 else "out of the screen"
+
+
+def number(value: float, signed: bool = True) -> str:
+    """A reading with a stable layout: 4 decimals from 0.001 to 1000, else scientific.
+
+    With a fixed number of decimals the decimal point stays in place as the value
+    changes (the info panel right-aligns numbers in fixed-width columns).
+    """
+    sign = "+" if signed else ""
+    magnitude = abs(value)
+    if magnitude == 0 or 1e-3 <= magnitude < 1e3:
+        return f"{value:{sign}.4f}"
+    return f"{value:{sign}.2e}"
 
 
 def plural(count: int, noun: str) -> str:

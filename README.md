@@ -323,6 +323,11 @@ the cell under the mouse it shows:
   that one cell; **Wire I** is the total through the whole wire at that point, like a clamp
   meter: it adds up the cells across the wire, perpendicular to the flow.
 
+Readings sit in fixed columns: x and y components, then the magnitude, with every number
+right-aligned in a column wide enough for any value. Numbers use 4 decimals between 0.001 and
+1000 (scientific notation outside that range), so the decimal point stays put and nothing shifts
+sideways as values change.
+
 All numbers in the panel (V, E, B, S, I, the battery's terminal voltage and current, and the
 mean |E| in wires) are additionally low-pass filtered over about one *real* second
 (`readout_smoothing_seconds`), so they are readable at any simulation speed instead of

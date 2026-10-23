@@ -256,3 +256,43 @@ def test_wire_current_sums_across_the_wire(app):
     app.current[2:10, 4:7] = [0, 0.1]  # Flowing along y instead: cross-section is a row.
     total, width = app.wire_current(5, 5)
     assert (total, width) == (pytest.approx(0.8), 8)
+
+
+@pytest.mark.parametrize(
+    "value", [0, 1e-9, -3.2e-5, 0.000999, 0.001, -0.0417, 0.5, 9.99999, -123.456, 999.9, 4.2e6]
+)
+def test_numbers_fit_their_fixed_column(app, value):
+    from embloks.app import number
+    from embloks.render import _NUMBER, _WIDEST_NUMBER
+
+    for signed in (True, False):
+        text = number(value, signed=signed)
+        assert _NUMBER.match(text), text  # Recognised as a number: right-aligned in a column.
+        assert app.font.size(text)[0] <= app.font.size(_WIDEST_NUMBER)[0]
+
+
+class RecordingSurface(pygame.Surface):
+    """A surface that remembers where things were blitted."""
+
+    def __init__(self, size):
+        super().__init__(size)
+        self.blits = []
+
+    def blit(self, source, dest, *args, **kwargs):
+        self.blits.append((source.get_width(), dest[0]))
+        return super().blit(source, dest, *args, **kwargs)
+
+
+def test_readout_columns_do_not_move_when_values_change(app):
+    from embloks import render
+
+    layouts = []
+    for e in (("+0.0417", "-0.0001"), ("+123.4560", "+1.23e-05")):
+        surface = RecordingSurface((800, 300))
+        render.draw_hud(surface, app.font, [[("V", ("+0.5000",)), ("E", (*e, "|E|", "0.0400"))]],
+                        app.settings)
+        # Skip the background box; then: V label, V value, E label, Ex, Ey, "|E|", |E| value.
+        blits = surface.blits[1:]
+        right_edges = [x + w for w, x in blits[3:5]]  # Ex and Ey numbers.
+        layouts.append((right_edges, blits[5][1], blits[1][1] + blits[1][0]))
+    assert layouts[0] == layouts[1]  # Same right edges, "|E|" position and V position.
