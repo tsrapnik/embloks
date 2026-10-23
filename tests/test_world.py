@@ -36,16 +36,26 @@ def test_painting_spawns_n_electrons_per_cell_inside_it(n):
     paint(world, row_of(2, 7, 3))
     assert len(world.particles) == 5 * n
     assert (electrons_per_cell(world)[2:7, 3] == n).all()
-    assert np.allclose(world.particles.charge, -1 / n)
+    assert np.allclose(world.particles.charge, -world.settings.cell_charge / n)
     assert np.allclose(world.particles.charge / world.particles.mass, -1)
 
 
-def test_repainting_conductive_cells_keeps_their_electrons():
+def test_repainting_conductors_keeps_their_electrons():
     world = make_world()
     paint(world, row_of(2, 7, 3))
     before = world.particles.pos.copy()
-    paint(world, row_of(2, 7, 3), Material.BATTERY, orientation=Orientation.RIGHT)
+    cols, rows = np.array(row_of(2, 7, 3)).T
+    world.paint(cols, rows, Material.CONDUCTOR, resistance=5)
     assert np.array_equal(world.particles.pos, before)
+
+
+def test_painting_a_battery_over_a_wire_removes_that_cells_charges():
+    world = make_world()
+    paint(world, row_of(2, 7, 3))
+    world.paint(np.array([4]), np.array([3]), Material.BATTERY, emf=5)
+    assert len(world.particles) == 4
+    assert_electrons_inside_conductors(world)
+    assert len(world.stacks) == 1
 
 
 def test_erasing_removes_electrons_of_erased_cells():

@@ -3,7 +3,6 @@ import numpy as np
 from embloks.config import Settings
 from embloks.connectivity import Connectivity
 from embloks.fields import ElectricField, interpolate
-from embloks.materials import Material
 
 # Particles stopped at a wall stay this far inside their cell.
 _WALL_GAP = 1e-6
@@ -11,11 +10,22 @@ _WALL_GAP = 1e-6
 
 def damping_rates(world, cols: np.ndarray, rows: np.ndarray, settings: Settings) -> np.ndarray:
     """Drag rate (1/time) for particles in the given cells: proportional to resistance."""
-    m = world.materials
-    resistance = np.where(
-        m.kind[cols, rows] == Material.BATTERY, settings.battery_resistance, m.resistance[cols, rows]
-    )
-    return resistance * settings.drag_per_resistance
+    s = settings
+    return world.materials.resistance[cols, rows] * s.drag_per_resistance * s.cell_charge
+
+
+def current_density(world) -> np.ndarray:
+    """Conventional current per cell, sum of q * v over its electrons, shape (cols, rows, 2).
+
+    For a 1-cell-wide wire this is the current through the cell (charge per time).
+    """
+    m, p = world.materials, world.particles
+    cols, rows = p.cells()
+    index = cols * m.rows + rows
+    size = m.cols * m.rows
+    jx = np.bincount(index, p.charge * p.vel[:, 0], minlength=size)
+    jy = np.bincount(index, p.charge * p.vel[:, 1], minlength=size)
+    return np.stack([jx, jy], axis=-1).reshape(m.cols, m.rows, 2)
 
 
 def kick(vel: np.ndarray, acc: np.ndarray, damping: np.ndarray, dt: float) -> np.ndarray:
@@ -82,9 +92,9 @@ def step(world, electric: ElectricField, dt: float, settings: Settings) -> int:
     substeps = int(np.clip(np.ceil(speed * dt / s.max_step), 1, s.max_substeps))
     h = dt / substeps
     for _ in range(substeps):
+        cols, rows = p.cells()
         field = interpolate(electric.grid(world), p.pos)
         acc = (p.charge / p.mass)[:, None] * field
-        cols, rows = p.cells()
         vel = kick(p.vel, acc, damping_rates(world, cols, rows, s), h)
         move = vel * h
         # Safety net if velocity jumped within this substep: never move further than max_step.

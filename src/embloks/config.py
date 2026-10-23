@@ -30,8 +30,10 @@ class Settings:
     # Brush values step through these ladders with Up/Down.
     resistance_values: tuple[float, ...] = (0.1, 0.2, 0.5, 1, 2, 5, 10, 20, 50, 100)
     default_resistance: float = 1
-    emf_values: tuple[float, ...] = tuple(range(1, 21))
-    default_emf: float = 5
+    # Kept modest: holding a voltage takes separated charge, and small circuits run
+    # out of electrons above ~10 (see cell_charge).
+    emf_values: tuple[float, ...] = tuple(range(1, 11))
+    default_emf: float = 3
     max_brush_radius: int = 10
 
     # Conductors shade from bright (lowest resistance) to dark (highest).
@@ -41,16 +43,25 @@ class Settings:
     battery_plus_color: tuple[int, int, int] = (220, 60, 60)
     battery_minus_color: tuple[int, int, int] = (60, 110, 230)
 
-    # Simulation units: lengths in cells, e = electron mass = 1.
-    elementary_charge: float = 1.0
-    electron_mass: float = 1.0
-    # Electrons per conductive cell; each carries -e/n so cells stay neutral.
-    carriers_per_cell: int = 1
+    # Simulation units: lengths in cells, Coulomb constant 1 (below), charges in units e.
+    # Charge of the fixed ion in each conductor cell: the conductor's carrier density.
+    # Batteries separate charge to build up their voltage; this must be large enough
+    # that wires don't run out of electrons doing so (real metals have plenty).
+    cell_charge: float = 4.0
+    # Electrons per conductor cell; each carries -cell_charge / n so cells stay neutral.
+    carriers_per_cell: int = 4
+    # |charge| / mass of an electron, the same for any carriers_per_cell.
+    carrier_charge_to_mass: float = 1.0
 
-    # Drag on electrons: damping rate (1/time) = resistance * drag_per_resistance.
+    # Drag on electrons: damping rate (1/time) = resistance * drag_per_resistance *
+    # cell_charge. Scaling with the carrier density makes a cell of resistance R carry
+    # current I = E / R (charge per time), i.e. R is in ohms.
     drag_per_resistance: float = 1.0
-    # Batteries have no resistance setting; this small value keeps electrons in them damped.
+    # Internal resistance per battery cell. A perfect battery would have 0; a small value
+    # keeps the pump from overshooting: it moves charge at (EMF - V) / resistance.
     battery_resistance: float = 0.1
+    # Displayed currents are averaged over roughly this much simulation time.
+    current_smoothing_time: float = 1.0
     # Fraction of normal velocity kept when an electron bounces off a closed cell face.
     wall_restitution: float = 0.3
     # Largest move (cells) per substep, and the cap on substeps per tick.

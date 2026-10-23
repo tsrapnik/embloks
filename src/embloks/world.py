@@ -1,5 +1,6 @@
 import numpy as np
 
+from embloks.battery import Stack, find_stacks
 from embloks.config import Settings
 from embloks.connectivity import compute_connectivity
 from embloks.materials import Material, Materials, Orientation
@@ -14,8 +15,8 @@ SPAWN_JITTER = 0.02
 class World:
     """Materials plus the charges they carry, kept consistent while painting.
 
-    Every conductive cell holds one fixed ion of charge +e at its centre and,
-    when neutral, `carriers_per_cell` electrons of charge -e/n each.
+    Every conductor cell holds one fixed ion of charge +cell_charge at its centre
+    and, when neutral, `carriers_per_cell` electrons of charge -cell_charge/n each.
     """
 
     def __init__(self, cols: int, rows: int, settings: Settings, rng: np.random.Generator | None = None):
@@ -23,7 +24,11 @@ class World:
         self.rng = rng or np.random.default_rng()
         self.materials = Materials(cols, rows)
         self.particles = Particles()
-        self.connectivity = compute_connectivity(self.materials)
+        # Per battery stack: charge owed but not yet moved (less than one electron),
+        # and smoothed current, for display.
+        self.pump_charge: dict[Stack, float] = {}
+        self.pump_current: dict[Stack, float] = {}
+        self._update_structure()
         # Fixed test charges, at most one per cell, at cell centres.
         self.fixed_pos = np.empty((0, 2))
         self.fixed_charge = np.empty(0)
@@ -32,12 +37,12 @@ class World:
 
     @property
     def electron_charge(self) -> float:
-        return -self.settings.elementary_charge / self.settings.carriers_per_cell
+        return -self.settings.cell_charge / self.settings.carriers_per_cell
 
     @property
     def electron_mass(self) -> float:
         # Mass shrinks with charge, so charge/mass and thus the dynamics don't depend on n.
-        return self.settings.electron_mass / self.settings.carriers_per_cell
+        return -self.electron_charge / self.settings.carrier_charge_to_mass
 
     def paint(
         self,
@@ -51,7 +56,7 @@ class World:
         was_conductive = self.materials.conductive
         old_labels = self.connectivity.labels
         self.materials.paint(cols, rows, material, resistance, emf, orientation)
-        self.connectivity = compute_connectivity(self.materials)
+        self._update_structure()
 
         is_conductive = self.materials.conductive
         removed = was_conductive & ~is_conductive
@@ -64,10 +69,32 @@ class World:
     def clear(self) -> None:
         self.materials.clear()
         self.particles = Particles()
-        self.connectivity = compute_connectivity(self.materials)
+        self._update_structure()
         self.fixed_pos = np.empty((0, 2))
         self.fixed_charge = np.empty(0)
         self.fixed_version += 1
+
+    def _update_structure(self) -> None:
+        """Recompute islands and battery stacks after the materials changed."""
+        self.connectivity = compute_connectivity(self.materials)
+        self.stacks = find_stacks(self.materials, self.settings.battery_resistance)
+        # Distance along the wires from every battery terminal, for choosing which
+        # electron a battery takes: the nearest one *along the wire*, never one
+        # that is merely close in a straight line (e.g. just across the battery).
+        terminals = sorted(
+            {t for st in self.stacks for t in (st.low, st.high) if self._is_conductor(t)}
+        )
+        distances = self.connectivity.distances_from(terminals)
+        self.terminal_distance = dict(zip(terminals, distances))
+        # Forget pump state of stacks that no longer exist.
+        for state in (self.pump_charge, self.pump_current):
+            for stack in set(state) - set(self.stacks):
+                del state[stack]
+
+    def _is_conductor(self, cell: tuple[int, int]) -> bool:
+        c, r = cell
+        m = self.materials
+        return 0 <= c < m.cols and 0 <= r < m.rows and bool(m.conductive[c, r])
 
     def place_charges(self, cols: np.ndarray, rows: np.ndarray, charge: float) -> None:
         """Put a fixed test charge at the centre of each given cell, replacing any there."""

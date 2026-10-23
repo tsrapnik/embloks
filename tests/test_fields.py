@@ -91,8 +91,8 @@ def test_static_cache_is_refreshed_after_painting_and_placing_charges(world):
     assert np.allclose(electric.static_grid(world), 0)
     world.paint(np.array([10]), np.array([7]), Material.CONDUCTOR, resistance=1)
     assert electric.static_grid(world)[12, 7, 0] > 0  # Ion at (10, 7) pushes right.
-    world.place_charges(np.array([15]), np.array([7]), 5)
-    assert electric.static_grid(world)[12, 7, 0] < 0  # Now the +5 charge dominates.
+    world.place_charges(np.array([13]), np.array([7]), 5)
+    assert electric.static_grid(world)[12, 7, 0] < 0  # Now the nearby +5 charge dominates.
 
 
 def test_interpolate_reads_back_grid_values_and_is_bilinear():
@@ -136,7 +136,8 @@ def test_place_charges_replaces_and_remove_clears(world):
 def test_neutral_conductor_with_centred_electrons_has_no_field(world):
     world.paint(np.repeat(np.arange(4, 16), 6), np.tile(np.arange(4, 10), 12),
                 Material.CONDUCTOR, resistance=1)
-    world.particles.pos = np.argwhere(world.materials.conductive) + 0.5
+    n = world.settings.carriers_per_cell
+    world.particles.pos = np.repeat(np.argwhere(world.materials.conductive), n, axis=0) + 0.5
     electric = ElectricField(world.settings)
     centres = np.argwhere(np.ones((20, 14), dtype=bool)) + 0.5
     assert np.abs(electric.at(world, centres)).max() < 1e-12

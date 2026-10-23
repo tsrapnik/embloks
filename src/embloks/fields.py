@@ -39,11 +39,35 @@ def coulomb_field(
     return field
 
 
-class GridKernel:
-    """Field at every cell centre from charges on cell centres, via FFT convolution.
+def coulomb_potential(
+    points: np.ndarray,
+    sources: np.ndarray,
+    charges: np.ndarray,
+    softening: float,
+    k: float = 1.0,
+) -> np.ndarray:
+    """Electric potential at `points` (M,) from softened point charges; zero far away.
 
-    Equivalent to coulomb_field over all cells, but O(n log n). The kernel's
-    transform is computed once per grid size and softening.
+    V = k q / sqrt(r^2 + eps^2), the potential whose gradient is coulomb_field.
+    """
+    potential = np.zeros(len(points))
+    if len(points) == 0 or len(sources) == 0:
+        return potential
+    rows_per_block = max(1, _BLOCK_SIZE // len(sources))
+    eps2 = softening**2
+    for start in range(0, len(points), rows_per_block):
+        block = points[start : start + rows_per_block]
+        dx = block[:, 0, None] - sources[None, :, 0]
+        dy = block[:, 1, None] - sources[None, :, 1]
+        potential[start : start + rows_per_block] = k * (charges / np.sqrt(dx * dx + dy * dy + eps2)).sum(axis=1)
+    return potential
+
+
+class GridKernel:
+    """Field and potential at every cell centre from charges on cell centres, via FFT.
+
+    Equivalent to coulomb_field / coulomb_potential over all cells, but O(n log n).
+    The kernel transforms are computed once per grid size and softening.
     """
 
     def __init__(self, cols: int, rows: int, softening: float, k: float = 1.0):
@@ -57,18 +81,25 @@ class GridKernel:
         dx, dy = np.meshgrid(
             np.arange(-(cols - 1), cols), np.arange(-(rows - 1), rows), indexing="ij"
         )
-        inv_r3 = k / (dx**2 + dy**2 + softening**2) ** 1.5
+        r2 = dx**2 + dy**2 + softening**2
+        inv_r3 = k / r2**1.5
         self._kx = fft.rfft2(dx * inv_r3, s=self.shape)
         self._ky = fft.rfft2(dy * inv_r3, s=self.shape)
+        self._kv = fft.rfft2(k / np.sqrt(r2), s=self.shape)
+        # Offset 0 sits at kernel index n - 1, so the centred outputs start there.
+        self._keep = (slice(cols - 1, 2 * cols - 1), slice(rows - 1, 2 * rows - 1))
+
+    def _apply(self, q: np.ndarray, kernel: np.ndarray) -> np.ndarray:
+        return fft.irfft2(q * kernel, s=self.shape)[self._keep]
 
     def field(self, charge_grid: np.ndarray) -> np.ndarray:
         """`charge_grid` (cols, rows) -> field (cols, rows, 2)."""
         q = fft.rfft2(charge_grid, s=self.shape)
-        # Offset 0 sits at kernel index n - 1, so the centred outputs start there.
-        keep = (slice(self.cols - 1, 2 * self.cols - 1), slice(self.rows - 1, 2 * self.rows - 1))
-        ex = fft.irfft2(q * self._kx, s=self.shape)[keep]
-        ey = fft.irfft2(q * self._ky, s=self.shape)[keep]
-        return np.stack([ex, ey], axis=-1)
+        return np.stack([self._apply(q, self._kx), self._apply(q, self._ky)], axis=-1)
+
+    def potential(self, charge_grid: np.ndarray) -> np.ndarray:
+        """`charge_grid` (cols, rows) -> potential (cols, rows)."""
+        return self._apply(fft.rfft2(charge_grid, s=self.shape), self._kv)
 
 
 @lru_cache(maxsize=8)
@@ -132,45 +163,65 @@ class ElectricField:
         self.settings = settings
         self._static_key = None
         self._static_grid: np.ndarray | None = None
+        self._static_potential: np.ndarray | None = None
 
     def _kernel(self, world, softening: float) -> GridKernel:
         m = world.materials
         return grid_kernel(m.cols, m.rows, softening, self.settings.coulomb_k)
 
+    def _update_static(self, world) -> None:
+        """(Re)compute the field and potential of ions and test charges if they changed."""
+        key = (id(world), world.materials.version, world.fixed_version)
+        if key == self._static_key:
+            return
+        s, m = self.settings, world.materials
+        ion_kernel = self._kernel(world, s.conductor_softening)
+        ions = m.conductive * s.cell_charge
+        fixed_kernel = self._kernel(world, s.test_charge_softening)
+        fixed = deposit(world.fixed_pos, world.fixed_charge, m.cols, m.rows)
+        self._static_grid = ion_kernel.field(ions) + fixed_kernel.field(fixed)
+        self._static_potential = ion_kernel.potential(ions) + fixed_kernel.potential(fixed)
+        self._static_key = key
+
     def static_grid(self, world) -> np.ndarray:
         """Field of ions and test charges at every cell centre, shape (cols, rows, 2)."""
-        key = (id(world), world.materials.version, world.fixed_version)
-        if key != self._static_key:
-            s, m = self.settings, world.materials
-            ions = self._kernel(world, s.conductor_softening).field(
-                m.conductive * s.elementary_charge
-            )
-            charge = deposit(world.fixed_pos, world.fixed_charge, m.cols, m.rows)
-            fixed = self._kernel(world, s.test_charge_softening).field(charge)
-            self._static_grid = ions + fixed
-            self._static_key = key
+        self._update_static(world)
         return self._static_grid
+
+    def _electron_charge(self, world) -> np.ndarray:
+        m, p = world.materials, world.particles
+        return deposit(p.pos, p.charge, m.cols, m.rows)
 
     def electron_grid(self, world) -> np.ndarray:
         """Approximate electron field at every cell centre, shape (cols, rows, 2)."""
-        m, p = world.materials, world.particles
-        charge = deposit(p.pos, p.charge, m.cols, m.rows)
-        return self._kernel(world, self.settings.conductor_softening).field(charge)
+        kernel = self._kernel(world, self.settings.conductor_softening)
+        return kernel.field(self._electron_charge(world))
 
     def grid(self, world) -> np.ndarray:
         """Total field at every cell centre, shape (cols, rows, 2)."""
         return self.static_grid(world) + self.electron_grid(world)
 
+    def potential_grid(self, world) -> np.ndarray:
+        """Total potential at every cell centre, shape (cols, rows); zero far away."""
+        self._update_static(world)
+        kernel = self._kernel(world, self.settings.conductor_softening)
+        return self._static_potential + kernel.potential(self._electron_charge(world))
+
     def at(self, world, points: np.ndarray) -> np.ndarray:
         """Exact total field at arbitrary points (M, 2), all sources summed directly."""
+        return self._sum_sources(world, points, coulomb_field)
+
+    def potential_at(self, world, points: np.ndarray) -> np.ndarray:
+        """Exact electric potential at arbitrary points (M,), zero far from all charges."""
+        return self._sum_sources(world, points, coulomb_potential)
+
+    def _sum_sources(self, world, points: np.ndarray, kernel) -> np.ndarray:
         s = self.settings
         ions = np.argwhere(world.materials.conductive) + 0.5
-        ion_charges = np.full(len(ions), s.elementary_charge)
+        ion_charges = np.full(len(ions), s.cell_charge)
         p = world.particles
         return (
-            coulomb_field(points, ions, ion_charges, s.conductor_softening, s.coulomb_k)
-            + coulomb_field(points, p.pos, p.charge, s.conductor_softening, s.coulomb_k)
-            + coulomb_field(
-                points, world.fixed_pos, world.fixed_charge, s.test_charge_softening, s.coulomb_k
-            )
+            kernel(points, ions, ion_charges, s.conductor_softening, s.coulomb_k)
+            + kernel(points, p.pos, p.charge, s.conductor_softening, s.coulomb_k)
+            + kernel(points, world.fixed_pos, world.fixed_charge, s.test_charge_softening, s.coulomb_k)
         )

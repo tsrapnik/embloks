@@ -49,9 +49,9 @@ The per-block field grid is for visualisation (and Poynting). One function
 `field_at(points, exclude_idx)` serves both.
 
 ### 5. Graininess: carriers per cell
-One electron per block gives very noisy fields/current. Setting `carriers_per_cell = n`
-(default 1, try 4): each conductor cell gets n electrons of charge `−e/n` (ion stays `+e`), so
-neutrality holds and fields smooth out. Display fields are also **time-averaged** (EMA over a few
+One electron per block gives very noisy fields/current. Each conductor cell has an ion of
+`cell_charge` and `carriers_per_cell = n` electrons of `−cell_charge/n` (defaults 4 and 4, so
+electrons are −1 e; see §8 for why the density is 4), so neutrality holds and fields smooth out. Display fields are also **time-averaged** (EMA over a few
 ticks), physics uses instantaneous values.
 
 ### 6. Resistance as drag (Drude model) — works as you intended
@@ -69,20 +69,29 @@ which *is* Ohm's law (resistivity ∝ γ). Integrate drag implicitly
   and n electrons (those inside the cell first, else nearest in the same island); remaining
   electrons in the erased cell are pushed to the nearest conductor cell of the same island.
 
-### 8. Voltage source — "perfect battery" = EMF force inside the block
-Textbook definition of EMF: a **non-electrostatic force** that pushes charges against E inside the
-source, with `∫ f/q · dl = ℰ`. Implementation:
-- A battery cell is a conductor cell (has ion + electrons) plus an orientation (→ ↑ ← ↓) and EMF ℰ.
-- Electrons inside it feel an extra uniform force `F = e·ℰ / L` (L = cell size) pointing from
-  the + face to the − face (electrons are pumped to the − terminal).
-- The two **side faces are walls** (directional connectivity), only + and − faces connect —
-  matches your "remaining sides neutral".
-- "Perfect" = no internal resistance → γ_battery ≈ 0 (small value for numerical stability).
-  In open circuit, charge piles up at the terminals until the electrostatic field exactly
-  cancels the pump: terminal voltage = ℰ. Under load the voltage stays ℰ, current = ℰ/R.
-- Multi-cell batteries in series just add EMF (each cell has its own orientation).
-- Rejected alternative: teleporting electrons from + to − face — that's a *current* source,
-  not a voltage source.
+### 8. Voltage source — "perfect battery" = feedback charge pump
+*Original plan: a uniform EMF force on electrons inside the battery cell. Built and measured in
+step 7; it does not work here.* Electrons in the + wire sit still (screened), so nothing feeds
+the pump. And at the battery's faces the force jumps, so an electron there is pushed back from
+both sides for any static field between 0 and ℰ: every terminal voltage in [0, ℰ] is a resting
+state, set by history (measured: 2.4 V of 5 V with R = 1 wires).
+
+What is built instead (step 7, `battery.py`):
+- A battery cell holds no charges and is a wall for electrons on all sides.
+- Battery cells lined up along their axis form a **stack**; EMFs add with sign, and internal
+  resistances add (0.1 per cell). The conductor cells beyond its ends are its terminals.
+- Each tick: measure V = V(+) − V(−) (grid potential averaged over the terminal's 3×3
+  same-island neighbourhood, which damps single-electron noise), then move charge + → − at
+  `I = (ℰ − V)/R_int`, one electron at a time. That is exactly a Thevenin voltage source:
+  V = ℰ at zero current, ℰ − I·R_int under load. This stands in for the electrolyte's ions.
+- The electron taken is the one nearest the source terminal **along the wire** (cached BFS
+  distances), not in a straight line: in a closed loop the nearest one in a straight line can be
+  the one just delivered across the battery.
+- Charge density matters: holding ℰ needs separated charge of order ℰ, so cells carry
+  `cell_charge` = 4 (4 electrons of −1 each) and EMF is capped at 10, otherwise small loops
+  run out of electrons. Drag scales with `cell_charge`, so a cell of resistance R carries I = E/R.
+- Verified: open-circuit V → ℰ; loop current → ℰ/(N·R + R_int) (59-cell loop: 0.085 vs 0.0846);
+  reversed polarity reverses the current.
 
 ### 9. Units & constants
 Simulation units: `k = 1/(4πε0)` = 1, electron mass = 1, e = 1, **length unit = 1 cell**.
@@ -142,8 +151,8 @@ tests/                          # physics sanity tests
    weights used for deposition (zero self-force, momentum conserving). Electrons spawn on their
    ion (+tiny jitter): random spawning left a disordered "electron glass" that relaxed slowly
    and kept visible noise. Measured: ~95% of an external field screened within ~5 time units.
-7. **Battery** — EMF force + side walls (§8). HUD inspector: hover a cell to see E, Bz, S, and
-   current through it (charge crossing per second). Verify Ohm's law with a battery + wire loop.
+7. **Battery** — feedback charge pump (§8, replaces the planned EMF force). HUD inspector: hover
+   a cell to see V, E and current through it. Verified Ohm's law with a battery + wire loop.
 8. **Magnetism** — Bz from moving charges (Biot–Savart), v×B force, B layer (red/blue heatmap or
    ⊙/⊗), `c` setting.
 9. **Poynting** — S = E×B/μ0 per cell, S layer.

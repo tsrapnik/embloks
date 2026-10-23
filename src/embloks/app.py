@@ -1,7 +1,7 @@
 import numpy as np
 import pygame
 
-from embloks import physics, render
+from embloks import battery, physics, render
 from embloks.config import Settings
 from embloks.fields import ElectricField
 from embloks.grid import Grid
@@ -46,6 +46,8 @@ class App:
         s = self.settings
         self.grid = Grid.fit(s.grid_density, s.window_width, s.window_height)
         self.world = World(self.grid.cols, self.grid.rows, s)
+        # Conventional current per cell, averaged over current_smoothing_time.
+        self.current = np.zeros((self.grid.cols, self.grid.rows, 2))
         self.sim_time = 0.0
         self.tick_count = 0
         # Real time not yet consumed by physics ticks.
@@ -162,7 +164,11 @@ class App:
             self._accumulator = 0.0
 
     def step(self, dt: float) -> None:
-        physics.step(self.world, self.electric, dt, self.settings)
+        s = self.settings
+        battery.pump(self.world, self.electric.potential_grid(self.world), dt, s)
+        physics.step(self.world, self.electric, dt, s)
+        alpha = min(1.0, dt / s.current_smoothing_time)
+        self.current += alpha * (physics.current_density(self.world) - self.current)
         self.sim_time += dt
         self.tick_count += 1
 
@@ -213,12 +219,19 @@ class App:
             lines.append(f"Mean |E| inside conductors {inside:.4f}")
         if self.hovered_cell is not None:
             col, row = self.hovered_cell
-            lines.append(f"Cell {self.hovered_cell}: {self.describe_cell(col, row)}")
+            potential = self.electric.potential_grid(self.world)
+            lines.append(f"Cell {self.hovered_cell}: {self.describe_cell(col, row, potential)}")
             ex, ey = e_grid[col, row]
-            lines.append(f"E = ({ex:+.3g}, {ey:+.3g})   |E| = {np.hypot(ex, ey):.3g}")
+            lines.append(
+                f"V = {potential[col, row]:+.3g}   E = ({ex:+.3g}, {ey:+.3g})"
+                f"   |E| = {np.hypot(ex, ey):.3g}"
+            )
+            if self.world.materials.conductive[col, row]:
+                ix, iy = self.current[col, row]
+                lines.append(f"Current I = ({ix:+.3g}, {iy:+.3g})   |I| = {np.hypot(ix, iy):.3g}")
         return lines
 
-    def describe_cell(self, col: int, row: int) -> str:
+    def describe_cell(self, col: int, row: int, potential: np.ndarray) -> str:
         m = self.world.materials
         kind = Material(m.kind[col, row])
         fixed_cells = np.floor(self.world.fixed_pos).astype(int)
@@ -226,15 +239,30 @@ class App:
         charge = f", test charge {self.world.fixed_charge[here][0]:+g} e" if here.any() else ""
         if kind == Material.VACUUM:
             return "vacuum" + charge
-        if kind == Material.CONDUCTOR:
-            text = f"conductor, resistance {m.resistance[col, row]:g}"
-        else:
+        if kind == Material.BATTERY:
             side = Orientation(m.orientation[col, row]).name.lower()
-            text = f"battery, EMF {m.emf[col, row]:g}, + side {side}"
+            return f"battery, EMF {m.emf[col, row]:g}, + side {side}; " + self.describe_stack(
+                (col, row), potential
+            )
+        text = f"conductor, resistance {m.resistance[col, row]:g}"
         cell_c, cell_r = self.world.particles.cells()
         electrons = np.count_nonzero((cell_c == col) & (cell_r == row))
         island = self.world.connectivity.labels[col, row]
         return f"{text}, island {island}, {electrons} electron(s){charge}"
+
+    def describe_stack(self, cell: tuple[int, int], potential: np.ndarray) -> str:
+        stack = next(st for st in self.world.stacks if cell in st.cells)
+        v_low = battery.terminal_potential(self.world, potential, stack.low)
+        v_high = battery.terminal_potential(self.world, potential, stack.high)
+        if v_low is None or v_high is None:
+            return f"stack EMF {abs(stack.emf):g}, not connected"
+        # Report from the stack's own + terminal, so both numbers come out positive.
+        sign = 1 if stack.emf >= 0 else -1
+        current = sign * self.world.pump_current.get(stack, 0.0)
+        return (
+            f"stack EMF {abs(stack.emf):g}, terminal voltage {sign * (v_high - v_low):.3g},"
+            f" current {current:.3g}"
+        )
 
     def update_caption(self) -> None:
         state = "paused" if self.paused else "running"

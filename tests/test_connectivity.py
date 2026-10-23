@@ -31,25 +31,14 @@ def test_diagonal_contact_does_not_connect():
     assert c.labels[1, 1] != c.labels[2, 2]
 
 
-def test_battery_connects_only_through_its_terminals():
+def test_battery_blocks_electrons_on_all_sides():
     m = Materials(5, 5)
     paint(m, [(2, 2)], Material.BATTERY, orientation=Orientation.RIGHT)
-    # Wires touching the + and - faces, and one touching a side face.
     paint(m, [(1, 2), (3, 2), (2, 1)])
     c = compute_connectivity(m)
-    assert c.labels[1, 2] == c.labels[2, 2] == c.labels[3, 2]
-    assert c.labels[2, 1] != c.labels[2, 2]
-    assert not c.open_y[2, 1]  # Wall between (2, 1) and (2, 2).
-    assert c.open_x[1, 2] and c.open_x[2, 2]
-
-
-def test_batteries_in_series_connect_but_side_by_side_do_not():
-    m = Materials(5, 5)
-    paint(m, [(1, 1), (2, 1)], Material.BATTERY, orientation=Orientation.LEFT)
-    paint(m, [(1, 2)], Material.BATTERY, orientation=Orientation.LEFT)
-    c = compute_connectivity(m)
-    assert c.labels[1, 1] == c.labels[2, 1]
-    assert c.labels[1, 1] != c.labels[1, 2]
+    assert c.labels[2, 2] == -1
+    assert len({c.labels[1, 2], c.labels[3, 2], c.labels[2, 1]}) == 3
+    assert not c.open_x[1, 2] and not c.open_x[2, 2] and not c.open_y[2, 1]
 
 
 def test_open_arrays_have_face_shapes():

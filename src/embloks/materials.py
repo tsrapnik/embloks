@@ -9,6 +9,10 @@ class Material(IntEnum):
     BATTERY = 2
 
 
+# Unit vector towards the + terminal for each Orientation value, for vectorised lookups.
+ORIENTATION_VECTORS = np.array([(1, 0), (0, 1), (-1, 0), (0, -1)], dtype=float)
+
+
 class Orientation(IntEnum):
     """Direction of a battery's + terminal, in screen coordinates (y points down)."""
 
@@ -19,7 +23,8 @@ class Orientation(IntEnum):
 
     @property
     def vector(self) -> tuple[int, int]:
-        return ((1, 0), (0, 1), (-1, 0), (0, -1))[self]
+        x, y = ORIENTATION_VECTORS[self]
+        return int(x), int(y)
 
     def rotated(self) -> "Orientation":
         """The next orientation, clockwise on screen."""
@@ -43,8 +48,9 @@ class Materials:
 
     @property
     def conductive(self) -> np.ndarray:
-        """Cells that hold a fixed ion and mobile electrons (conductors and batteries)."""
-        return self.kind != Material.VACUUM
+        """Cells that hold a fixed ion and mobile electrons. Batteries don't: they block
+        electrons and move charge between their terminals instead (see battery.py)."""
+        return self.kind == Material.CONDUCTOR
 
     def paint(
         self,

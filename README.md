@@ -55,33 +55,37 @@ canvas. On very fine grids the grid lines are hidden so they don't drown out the
 Every cell is one of:
 
 - **Vacuum** (dark): empty space.
-- **Conductor** (copper): carries charge. Each conductor cell has a resistance, picked from
-  0.1 to 100 with Up/Down before painting. Low-resistance cells are bright copper, high-resistance
-  cells dark brown. Painting over a conductor replaces its resistance.
-- **Battery** (grey, red and blue stripes): an ideal voltage source. The red stripe/`+` marks the
-  positive terminal, the blue stripe/`-` the negative one; only these two faces connect to
-  neighbouring cells. Set the EMF (1 to 20) with Up/Down and the direction of the `+` side with `R`
-  before painting. Batteries placed end to end add up like cells in series.
+- **Conductor** (copper): carries charge. Each conductor cell has a resistance in ohms, picked
+  from 0.1 to 100 with Up/Down before painting. Low-resistance cells are bright copper,
+  high-resistance cells dark brown. Painting over a conductor replaces its resistance.
+- **Battery** (grey, red and blue stripes): an ideal voltage source, see *Batteries* below. The
+  red stripe/`+` marks the positive terminal, the blue stripe/`-` the negative one. Set the EMF
+  (1 to 10) with Up/Down and the direction of the `+` side with `R` before painting.
 
-Cells only connect through shared edges: two cells touching only at a corner are *not*
-connected, and a battery's two side faces are walls. Dragging the brush always paints an
-edge-connected path, so a quick diagonal stroke still gives an unbroken wire. A group of connected
-cells is called an *island*; charge can never leave its island.
+Conductor cells only connect through shared edges: two cells touching only at a corner are *not*
+connected. Dragging the brush always paints an edge-connected path, so a quick diagonal stroke
+still gives an unbroken wire. A group of connected conductor cells is called an *island*;
+electrons can never leave their island. Batteries are walls for electrons; they move charge
+between the islands at their terminals instead.
 
 ### Charges
 
-Every conductive cell (conductor or battery) holds:
+Every conductor cell holds:
 
-- one fixed **positive ion** (red ring) at its centre, with charge +e, and
-- **electrons** (blue dots) that move freely within their island (see *Electron motion*).
-  By default there is one electron per cell; `carriers_per_cell` in
-  [config.py](src/embloks/config.py) sets more, each carrying a fraction -e/n so cells stay neutral.
+- one fixed **positive ion** (red ring) at its centre, with charge +4 e (`cell_charge`), and
+- 4 **electrons** (blue dots) of charge -1 e each (`carriers_per_cell`), which move freely
+  within their island (see *Electron motion*), so the cell is neutral overall.
 
-Painting a conductive cell adds its ion and electrons. Erasing a cell removes its ion and the same
-number of electrons from that island: first electrons inside the erased cell, then the nearest
-ones. If more electrons than that were in the erased cell, the extras are pushed into the nearest
-remaining cell of the island (or disappear if the whole island is erased). Repainting a cell with
-another conductive material (e.g. changing resistance) keeps its charges.
+The charge per cell sets how many free electrons a wire has. Batteries need to pile up some
+charge on their terminals to hold their voltage, and a wire with too few electrons would simply
+run empty (real metals have enormously many). Both values are in
+[config.py](src/embloks/config.py).
+
+Painting a conductor cell adds its ion and electrons. Erasing a cell (or painting a battery over
+it) removes its ion and the same number of electrons from that island: first electrons inside the
+erased cell, then the nearest ones. If more electrons than that were in the erased cell, the extras
+are pushed into the nearest remaining cell of the island (or disappear if the whole island is
+erased). Repainting a conductor with another resistance keeps its charges.
 
 Ion rings are only drawn when cells are large enough; on fine grids electrons become single pixels.
 
@@ -116,7 +120,7 @@ drift speed proportional to the field and inversely proportional to the resistan
 Low resistance means fast, sloshing electrons; high resistance means slow, creeping ones.
 
 Electrons can never leave their island: they bounce off any cell edge that doesn't conduct
-(vacuum, a battery's side faces, the edge of the canvas), losing part of their speed
+(vacuum, batteries, the edge of the canvas), losing part of their speed
 (`wall_restitution`). Fast electrons are moved in several small substeps, so they can't skip
 through a one-cell-wide wall.
 
@@ -124,17 +128,53 @@ What to try: place a test charge next to a conductor. Electrons flow towards a p
 (away from a negative one) until the field *inside* the conductor is nearly zero. This is
 **screening**, and it's why field lines always meet a conductor's surface at right angles. The info
 panel shows the mean |E| over all conductor cells, which drops as the electrons settle. It
-never reaches exactly zero: one electron per cell is grainy, so some small arrows of random
-direction remain. More `carriers_per_cell` makes it smoother.
+never reaches exactly zero: a few discrete electrons per cell are grainy, so some small arrows of
+random direction remain. More `carriers_per_cell` makes it smoother.
 
 Newly painted cells get their electrons right on top of their ions, so a fresh conductor is
 neutral everywhere and has no field until something disturbs it.
 
 Time: the simulation runs at about one time unit per real second (`dt` per tick in config.py).
 
+### Batteries
+
+A battery is an ideal **voltage source**: it keeps the voltage between its `+` and `-` terminals
+at its EMF. The terminals are the conductor cells touching its `+` and `-` faces.
+
+Electrons never pass *through* a battery. Instead, like the ions in a real battery's electrolyte,
+it takes electrons from the wire at its `+` terminal and delivers them to the wire at its `-`
+terminal. Each tick it measures the voltage V between its terminals and moves charge at a rate
+
+    I = (EMF - V) / R_internal
+
+with a small internal resistance (`battery_resistance`, 0.1 per cell). With nothing connected,
+charge builds up until V = EMF and the battery stops. With a circuit connected, it keeps
+supplying exactly the current the circuit draws, at V = EMF - I·R_internal. You'll see electrons
+vanish on the `+` side and appear on the `-` side.
+
+- **Series:** battery cells lined up end to end along their axis form one battery. Their EMFs
+  add, and a cell pointing the other way subtracts. Each cell adds 0.1 internal resistance.
+- **Ohm's law:** in a closed loop the current settles at `EMF / total resistance`, where a wire
+  of N cells of resistance R has resistance N·R. Very small loops carry a little more, because
+  electrons cut the corners and the wire is effectively shorter than its cell count.
+- **Patience:** the surface charges that steer the current around the loop take a while to
+  build up, about a minute for a long loop of resistance-1 wire, less for lower resistance.
+- **Limits:** a battery whose terminals aren't both wired does nothing. Very high EMFs on
+  small circuits empty the wires of electrons, which is why EMF stops at 10.
+
+Hover over a battery to see its stack's EMF, the measured terminal voltage and its current.
+
+### Info panel
+
 The brush outline follows the mouse. The info panel (top-left) shows the current tool, its value,
-the brush size, the number of electrons and islands, and what is in the cell under the mouse
-(material, island number and electron count).
+the brush size, the number of electrons and islands, and the mean |E| inside conductors. For the
+cell under the mouse it shows:
+
+- the material, island number and electron count (or the battery's stack details),
+- the electric potential **V** and field **E** at its centre,
+- for conductors, the **current** through it: conventional current (the direction positive
+  charge would flow, opposite to the electrons), averaged over about a second
+  (`current_smoothing_time`).
 
 The window title shows the frame rate, simulation time, paused state and grid size
 (columns x rows).
@@ -146,8 +186,8 @@ The window title shows the frame rate, simulation time, paused state and grid si
 - **[pygame-ce](https://pyga.me/)**: window, mouse/keyboard input and drawing.
 - **[NumPy](https://numpy.org/)**: all simulation state lives in arrays (one entry per cell or
   per electron), so every step is a handful of vectorised operations instead of Python loops.
-- **[SciPy](https://scipy.org/)**: FFTs for the field calculation, and connected-component
-  labelling to find islands.
+- **[SciPy](https://scipy.org/)**: FFTs for the field calculation, connected-component
+  labelling to find islands, and graph distances along wires for the batteries.
 - **[pytest](https://pytest.org/)**: tests, including physics checks (Coulomb's law, screening,
   electrons never escaping their island).
 
@@ -159,10 +199,10 @@ The window title shows the frame rate, simulation time, paused state and grid si
   even positive background that electrons can glide over. Ions and electrons share the same ε, so
   an electron sitting on its ion cancels it exactly.
 - **Fields via FFT.** Summing every charge's field at every cell costs
-  `cells × charges` operations. Instead, the charges are put on the grid and the field is
-  computed as a convolution with the Coulomb kernel using FFTs, which costs about
-  `cells × log(cells)` no matter how many electrons there are. The kernel's FFT is computed once
-  per grid size.
+  `cells × charges` operations. Instead, the charges are put on the grid and the field (and the
+  potential, which the batteries need) is computed as a convolution with the Coulomb kernel using
+  FFTs, which costs about `cells × log(cells)` no matter how many electrons there are. The
+  kernel's FFT is computed once per grid size.
 - **Cloud-in-cell.** Electrons sit anywhere, not just on cell centres, so each one's charge is
   shared over the 4 nearest cell centres in proportion to how close it is. Each electron reads
   the field back with exactly the same weights. This symmetry means an electron feels no force
@@ -177,5 +217,9 @@ The window title shows the frame rate, simulation time, paused state and grid si
 - **Drawing.** On fine grids only every n-th cell gets a field arrow, and with many electrons they
   are drawn as single pixels written straight into the screen array.
 
-The result: on a 200×160 grid with ~10,000 electrons a physics tick takes ~3 ms and a frame
-~20 ms.
+- **Batteries pick electrons along the wire.** A battery takes the electron nearest its source
+  terminal measured *along the wire* (cached breadth-first distances), never one that is only
+  close in a straight line, such as one just across the battery on the other side of a loop.
+
+The result: at the default grid a physics tick takes about 1 ms; on a 100×80 grid with ~10,000
+electrons about 3 ms, and a frame about 20 ms.
