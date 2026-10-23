@@ -76,7 +76,7 @@ def test_world_grid_field_matches_exact_field_away_from_electrons(world):
     # Ion and test charge parts are exact everywhere.
     centres = np.argwhere(np.ones((20, 14), dtype=bool)) + 0.5
     exact_without_electrons = electric.at(world, centres) - coulomb_field(
-        centres, world.particles.pos, world.particles.charge, world.settings.electron_softening
+        centres, world.particles.pos, world.particles.charge, world.settings.conductor_softening
     )
     approx_without_electrons = grid - electric.electron_grid(world)
     assert np.allclose(approx_without_electrons.reshape(-1, 2), exact_without_electrons)
@@ -111,3 +111,13 @@ def test_place_charges_replaces_and_remove_clears(world):
     world.remove_charges(np.array([1]), np.array([1]))
     assert world.fixed_charge.tolist() == [-5]
     assert np.allclose(world.fixed_pos, [[2.5, 1.5]])
+
+
+def test_neutral_conductor_with_centred_electrons_has_no_field(world):
+    world.paint(np.repeat(np.arange(4, 16), 6), np.tile(np.arange(4, 10), 12),
+                Material.CONDUCTOR, resistance=1)
+    world.particles.pos = np.argwhere(world.materials.conductive) + 0.5
+    electric = ElectricField(world.settings)
+    centres = np.argwhere(np.ones((20, 14), dtype=bool)) + 0.5
+    assert np.abs(electric.at(world, centres)).max() < 1e-12
+    assert np.abs(electric.grid(world)).max() < 1e-12

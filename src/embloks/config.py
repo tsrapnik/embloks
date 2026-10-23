@@ -49,11 +49,12 @@ class Settings:
 
     # Coulomb constant 1/(4 pi eps0).
     coulomb_k: float = 1.0
-    # Softening lengths (cells) per kind of charge. Ions are smeared over ~their cell,
+    # Softening length (cells) of ions and electrons. Ions are smeared over ~their cell,
     # so neighbouring ions form a smooth positive background electrons can roam over
-    # (a lattice ripple of roughly exp(-2 pi * 0.8) ~ 1%).
-    ion_softening: float = 0.8
-    electron_softening: float = 0.3
+    # (a lattice ripple of roughly exp(-2 pi * 0.8) ~ 1%). Electrons must use the same
+    # value: softened charges only cancel exactly when smeared alike, otherwise every
+    # neutral cell leaks a ~1/r^4 field that adds up across a conductor.
+    conductor_softening: float = 0.8
     test_charge_softening: float = 0.5
 
     # Fixed test charges (in units of e) painted with the charge tool.

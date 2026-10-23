@@ -104,7 +104,8 @@ gets an arrow, so arrows don't overlap. The info panel shows the exact E value u
 Each charge is slightly "smeared" (a softening length in config.py), so fields never become
 infinite at a charge. Ions are smeared over about a cell: together, neighbouring ions then act
 like a smooth positive background, which is what lets electrons move freely through a conductor
-instead of each one getting stuck on an ion.
+instead of each one getting stuck on an ion. Electrons are smeared exactly the same way
+(`conductor_softening`), so an electron sitting on its ion cancels it completely.
 
 Electrons don't move yet, so each electron and its ion form a small dipole, visible as short
 arrows inside conductors.

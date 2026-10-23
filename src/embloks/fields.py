@@ -118,7 +118,7 @@ class ElectricField:
         if key != self._ion_key:
             s = self.settings
             charge = world.materials.conductive * s.elementary_charge
-            self._ion_grid = self._kernel(world, s.ion_softening).field(charge)
+            self._ion_grid = self._kernel(world, s.conductor_softening).field(charge)
             self._ion_key = key
         return self._ion_grid
 
@@ -126,7 +126,7 @@ class ElectricField:
         """Approximate electron field at every cell centre, shape (cols, rows, 2)."""
         m, p = world.materials, world.particles
         charge = deposit(p.pos, p.charge, m.cols, m.rows)
-        return self._kernel(world, self.settings.electron_softening).field(charge)
+        return self._kernel(world, self.settings.conductor_softening).field(charge)
 
     def fixed_grid(self, world) -> np.ndarray:
         """Test charge field at every cell centre (exact: test charges sit on centres)."""
@@ -145,8 +145,8 @@ class ElectricField:
         ion_charges = np.full(len(ions), s.elementary_charge)
         p = world.particles
         return (
-            coulomb_field(points, ions, ion_charges, s.ion_softening, s.coulomb_k)
-            + coulomb_field(points, p.pos, p.charge, s.electron_softening, s.coulomb_k)
+            coulomb_field(points, ions, ion_charges, s.conductor_softening, s.coulomb_k)
+            + coulomb_field(points, p.pos, p.charge, s.conductor_softening, s.coulomb_k)
             + self._fixed(world, points)
         )
 
