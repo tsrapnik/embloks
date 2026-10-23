@@ -22,6 +22,9 @@ class World:
         self.materials = Materials(cols, rows)
         self.particles = Particles()
         self.connectivity = compute_connectivity(self.materials)
+        # Fixed test charges, at most one per cell, at cell centres.
+        self.fixed_pos = np.empty((0, 2))
+        self.fixed_charge = np.empty(0)
 
     @property
     def electron_charge(self) -> float:
@@ -58,6 +61,23 @@ class World:
         self.materials.clear()
         self.particles = Particles()
         self.connectivity = compute_connectivity(self.materials)
+        self.fixed_pos = np.empty((0, 2))
+        self.fixed_charge = np.empty(0)
+
+    def place_charges(self, cols: np.ndarray, rows: np.ndarray, charge: float) -> None:
+        """Put a fixed test charge at the centre of each given cell, replacing any there."""
+        self.remove_charges(cols, rows)
+        cells = np.unique(np.stack([cols, rows], axis=-1), axis=0)
+        self.fixed_pos = np.concatenate([self.fixed_pos, cells + 0.5])
+        self.fixed_charge = np.concatenate([self.fixed_charge, np.full(len(cells), charge)])
+
+    def remove_charges(self, cols: np.ndarray, rows: np.ndarray) -> None:
+        """Remove the fixed test charges in the given cells."""
+        fixed_cells = np.floor(self.fixed_pos).astype(np.int64)
+        n_rows = self.materials.rows
+        hit = np.isin(fixed_cells[:, 0] * n_rows + fixed_cells[:, 1], cols * n_rows + rows)
+        self.fixed_pos = self.fixed_pos[~hit]
+        self.fixed_charge = self.fixed_charge[~hit]
 
     def _spawn_carriers(self, cells: np.ndarray) -> None:
         n = self.settings.carriers_per_cell

@@ -133,6 +133,9 @@ tests/                          # physics sanity tests
    connectivity islands computed on paint; render ions/electrons.
 5. **Electrostatics + E layer** — `fields.py` with softened Coulomb (§3), cached ion field;
    per-cell E arrows with log-magnitude scaling. Add a "fixed test charge" tool to poke conductors.
+   Done with the §10 FFT approach for the *display* grid already: ions and test charges sit on
+   cell centres (exact), electrons are cloud-in-cell deposited (blurred within ~1 cell).
+   `ElectricField.at` stays an exact direct sum for arbitrary points.
 6. **Electron dynamics** — Lorentz (E only for now), implicit drag, substeps, confinement (§7).
    Expect: electrons screen the test charge, E inside conductor → ~0.
 7. **Battery** — EMF force + side walls (§8). HUD inspector: hover a cell to see E, Bz, S, and

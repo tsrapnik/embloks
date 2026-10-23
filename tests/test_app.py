@@ -104,3 +104,20 @@ def test_render_runs_with_all_materials(app):
         mouse(app, pygame.MOUSEBUTTONDOWN, cell, button=1)
         mouse(app, pygame.MOUSEBUTTONUP, cell, button=1)
     app.render()
+
+
+def test_charge_tool_places_and_right_click_removes_only_charges(app):
+    press(app, pygame.K_2)
+    mouse(app, pygame.MOUSEBUTTONDOWN, (3, 3), button=1)
+    mouse(app, pygame.MOUSEBUTTONUP, (3, 3), button=1)
+    press(app, pygame.K_4)
+    press(app, pygame.K_DOWN)
+    mouse(app, pygame.MOUSEBUTTONDOWN, (3, 3), button=1)
+    mouse(app, pygame.MOUSEBUTTONUP, (3, 3), button=1)
+    assert app.world.fixed_charge.tolist() == [app.brush.charge]
+    assert app.brush.charge < app.settings.default_test_charge
+    mouse(app, pygame.MOUSEBUTTONDOWN, (3, 3), button=3)
+    mouse(app, pygame.MOUSEBUTTONUP, (3, 3), button=3)
+    assert len(app.world.fixed_charge) == 0
+    assert app.world.materials.kind[3, 3] == Material.CONDUCTOR
+    app.render()

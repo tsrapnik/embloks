@@ -47,6 +47,29 @@ class Settings:
     # Electrons per conductive cell; each carries -e/n so cells stay neutral.
     carriers_per_cell: int = 1
 
+    # Coulomb constant 1/(4 pi eps0).
+    coulomb_k: float = 1.0
+    # Softening lengths (cells) per kind of charge. Ions are smeared over ~their cell,
+    # so neighbouring ions form a smooth positive background electrons can roam over
+    # (a lattice ripple of roughly exp(-2 pi * 0.8) ~ 1%).
+    ion_softening: float = 0.8
+    electron_softening: float = 0.3
+    test_charge_softening: float = 0.5
+
+    # Fixed test charges (in units of e) painted with the charge tool.
+    test_charge_values: tuple[float, ...] = (-10, -5, -2, -1, -0.5, 0.5, 1, 2, 5, 10)
+    default_test_charge: float = 1
+    positive_charge_color: tuple[int, int, int] = (230, 70, 70)
+    negative_charge_color: tuple[int, int, int] = (70, 120, 240)
+
+    # E-field arrows: lengths and brightness scale with log10|E| between these bounds.
+    e_field_min: float = 1e-3
+    e_field_max: float = 2.0
+    e_arrow_color: tuple[int, int, int] = (255, 215, 80)
+    e_arrow_dim_color: tuple[int, int, int] = (90, 75, 30)
+    # On fine grids only every n-th cell gets an arrow, keeping arrows this far apart.
+    min_arrow_spacing_px: int = 16
+
     ion_color: tuple[int, int, int] = (200, 40, 40)
     electron_color: tuple[int, int, int] = (90, 170, 255)
     # Electron dot radius as a fraction of the cell size.

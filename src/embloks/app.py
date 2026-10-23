@@ -3,17 +3,19 @@ import pygame
 
 from embloks import render
 from embloks.config import Settings
+from embloks.fields import ElectricField
 from embloks.grid import Grid
 from embloks.materials import Material, Orientation
-from embloks.ui import Brush, line_cells
+from embloks.ui import Brush, Tool, line_cells
 from embloks.world import World
 
 DENSITY_UP_KEYS = {pygame.K_PLUS, pygame.K_EQUALS, pygame.K_KP_PLUS}
 DENSITY_DOWN_KEYS = {pygame.K_MINUS, pygame.K_KP_MINUS}
 TOOL_KEYS = {
-    pygame.K_1: Material.VACUUM,
-    pygame.K_2: Material.CONDUCTOR,
-    pygame.K_3: Material.BATTERY,
+    pygame.K_1: Tool.VACUUM,
+    pygame.K_2: Tool.CONDUCTOR,
+    pygame.K_3: Tool.BATTERY,
+    pygame.K_4: Tool.CHARGE,
 }
 PAINT_BUTTON = 1
 ERASE_BUTTON = 3
@@ -32,6 +34,8 @@ class App:
         self.paused = False
         self.show_hud = True
         self.show_particles = True
+        self.show_e_field = True
+        self.electric = ElectricField(self.settings)
         self.brush = Brush(self.settings)
         self.material_layer = render.MaterialLayer()
         self.hovered_cell: tuple[int, int] | None = None
@@ -112,6 +116,8 @@ class App:
             self.world.clear()
         elif key == pygame.K_p:
             self.show_particles = not self.show_particles
+        elif key == pygame.K_e:
+            self.show_e_field = not self.show_e_field
         elif key == pygame.K_h:
             self.show_hud = not self.show_hud
 
@@ -125,11 +131,18 @@ class App:
         footprints = [self.brush.footprint(c, self.grid) for c in path]
         cols = np.concatenate([f[0] for f in footprints])
         rows = np.concatenate([f[1] for f in footprints])
-        if self._stroke_button == ERASE_BUTTON:
+        b = self.brush
+        erasing = self._stroke_button == ERASE_BUTTON
+        if b.tool == Tool.CHARGE:
+            # The charge tool erases only test charges, never materials.
+            if erasing:
+                self.world.remove_charges(cols, rows)
+            else:
+                self.world.place_charges(cols, rows, b.charge)
+        elif erasing:
             self.world.paint(cols, rows, Material.VACUUM)
         else:
-            b = self.brush
-            self.world.paint(cols, rows, b.tool, b.resistance, b.emf, b.orientation)
+            self.world.paint(cols, rows, b.tool.material, b.resistance, b.emf, b.orientation)
         self._stroke_cell = cell
 
     def advance(self, frame_seconds: float) -> None:
@@ -160,39 +173,55 @@ class App:
             self.screen, self.grid, self.world.materials, s, show_ions=self.show_particles
         )
         render.draw_grid_lines(self.screen, self.grid, s)
+        e_grid = self.electric.grid(self.world)
+        if self.show_e_field:
+            cells = render.arrow_sample_cells(self.grid, s)
+            render.draw_field_arrows(self.screen, self.grid, cells, e_grid[cells], s)
         if self.show_particles:
             render.draw_electrons(self.screen, self.grid, self.world.particles, s)
+        render.draw_fixed_charges(
+            self.screen, self.grid, self.world.fixed_pos, self.world.fixed_charge, s
+        )
         if self.hovered_cell is not None:
             cells = self.brush.footprint(self.hovered_cell, self.grid)
             render.draw_brush_outline(self.screen, self.grid, cells, s)
         if self.show_hud:
-            render.draw_hud(self.screen, self.font, self.hud_lines(), s)
+            render.draw_hud(self.screen, self.font, self.hud_lines(e_grid), s)
         pygame.display.flip()
         self.update_caption()
 
-    def hud_lines(self) -> list[str]:
+    def hud_lines(self, e_grid: np.ndarray) -> list[str]:
         b = self.brush
-        tool = f"Tool: {b.tool.name.lower()}"
-        if b.tool == Material.CONDUCTOR:
+        tool = f"Tool: {b.tool.label}"
+        if b.tool == Tool.CONDUCTOR:
             tool += f"   resistance {b.resistance:g}"
-        elif b.tool == Material.BATTERY:
+        elif b.tool == Tool.BATTERY:
             tool += f"   EMF {b.emf:g}   + side {b.orientation.name.lower()}"
+        elif b.tool == Tool.CHARGE:
+            tool += f"   charge {b.charge:+g} e"
         lines = [
             tool,
             f"Brush radius {b.radius}   Electrons {len(self.world.particles)}"
-            f"   Islands {self.world.connectivity.count}",
-            "1/2/3 tool   Up/Down value   R rotate   [ ] / wheel brush   C clear"
-            "   P particles   H hide",
+            f"   Islands {self.world.connectivity.count}"
+            f"   Test charges {len(self.world.fixed_charge)}",
+            "1-4 tool   Up/Down value   R rotate   [ ] / wheel brush   C clear",
+            "E field arrows   P particles   H hide",
         ]
         if self.hovered_cell is not None:
-            lines.append(f"Cell {self.hovered_cell}: {self.describe_cell(*self.hovered_cell)}")
+            col, row = self.hovered_cell
+            lines.append(f"Cell {self.hovered_cell}: {self.describe_cell(col, row)}")
+            ex, ey = e_grid[col, row]
+            lines.append(f"E = ({ex:+.3g}, {ey:+.3g})   |E| = {np.hypot(ex, ey):.3g}")
         return lines
 
     def describe_cell(self, col: int, row: int) -> str:
         m = self.world.materials
         kind = Material(m.kind[col, row])
+        fixed_cells = np.floor(self.world.fixed_pos).astype(int)
+        here = (fixed_cells[:, 0] == col) & (fixed_cells[:, 1] == row)
+        charge = f", test charge {self.world.fixed_charge[here][0]:+g} e" if here.any() else ""
         if kind == Material.VACUUM:
-            return "vacuum"
+            return "vacuum" + charge
         if kind == Material.CONDUCTOR:
             text = f"conductor, resistance {m.resistance[col, row]:g}"
         else:
@@ -201,7 +230,7 @@ class App:
         cell_c, cell_r = self.world.particles.cells()
         electrons = np.count_nonzero((cell_c == col) & (cell_r == row))
         island = self.world.connectivity.labels[col, row]
-        return f"{text}, island {island}, {electrons} electron(s)"
+        return f"{text}, island {island}, {electrons} electron(s){charge}"
 
     def update_caption(self) -> None:
         state = "paused" if self.paused else "running"

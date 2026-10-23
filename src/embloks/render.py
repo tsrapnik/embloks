@@ -143,3 +143,70 @@ def draw_hud(surface: pygame.Surface, font: pygame.font.Font, lines: list[str], 
     for r in rendered:
         surface.blit(r, (pad, y))
         y += r.get_height()
+
+
+def arrow_stride(grid: Grid, settings: Settings) -> int:
+    """Draw an arrow on every n-th cell, so arrows stay at least min_arrow_spacing_px apart."""
+    return max(1, -(-settings.min_arrow_spacing_px // grid.cell_px))
+
+
+def arrow_sample_cells(grid: Grid, settings: Settings) -> tuple[np.ndarray, np.ndarray]:
+    """Cells that get a field arrow: all of them, or every n-th on fine grids."""
+    stride = arrow_stride(grid, settings)
+    cols, rows = np.meshgrid(
+        np.arange(stride // 2, grid.cols, stride),
+        np.arange(stride // 2, grid.rows, stride),
+        indexing="ij",
+    )
+    return cols.ravel(), rows.ravel()
+
+
+def draw_field_arrows(
+    surface: pygame.Surface,
+    grid: Grid,
+    cells: tuple[np.ndarray, np.ndarray],
+    field: np.ndarray,
+    settings: Settings,
+) -> None:
+    """Arrows centred on cells, with length and brightness growing with log10|field|."""
+    cols, rows = cells
+    magnitude = np.hypot(field[:, 0], field[:, 1])
+    lo, hi = settings.e_field_min, settings.e_field_max
+    with np.errstate(divide="ignore"):
+        t = np.clip(np.log(magnitude / lo) / np.log(hi / lo), 0, 1)
+    spacing = grid.cell_px * arrow_stride(grid, settings)
+    centre_x = grid.origin_x + (cols + 0.5) * grid.cell_px
+    centre_y = grid.origin_y + (rows + 0.5) * grid.cell_px
+    dim = np.array(settings.e_arrow_dim_color)
+    bright = np.array(settings.e_arrow_color)
+    for i in np.flatnonzero(t > 0):
+        length = spacing * 0.9 * t[i]
+        if length < 2:
+            continue
+        ux, uy = field[i] / magnitude[i]
+        cx, cy = centre_x[i], centre_y[i]
+        tail = (cx - ux * length / 2, cy - uy * length / 2)
+        tip = (cx + ux * length / 2, cy + uy * length / 2)
+        color = dim + (bright - dim) * t[i]
+        pygame.draw.line(surface, color, tail, tip)
+        head = length * 0.3
+        # Two barbs at +-30 degrees from the reversed direction.
+        for sx, sy in ((0.866, 0.5), (0.866, -0.5)):
+            bx = -(ux * sx - uy * sy) * head
+            by = -(uy * sx + ux * sy) * head
+            pygame.draw.line(surface, color, tip, (tip[0] + bx, tip[1] + by))
+
+
+def draw_fixed_charges(
+    surface: pygame.Surface, grid: Grid, positions: np.ndarray, charges: np.ndarray, settings: Settings
+) -> None:
+    radius = max(3, grid.cell_px * 0.35)
+    for (x, y), q in zip(positions, charges):
+        cx, cy = grid.origin_x + x * grid.cell_px, grid.origin_y + y * grid.cell_px
+        color = settings.positive_charge_color if q > 0 else settings.negative_charge_color
+        pygame.draw.circle(surface, color, (cx, cy), radius)
+        if radius >= 6:
+            half, width = radius * 0.55, max(1, round(radius / 5))
+            pygame.draw.line(surface, (255, 255, 255), (cx - half, cy), (cx + half, cy), width)
+            if q > 0:
+                pygame.draw.line(surface, (255, 255, 255), (cx, cy - half), (cx, cy + half), width)

@@ -1,4 +1,5 @@
 from dataclasses import dataclass, field
+from enum import IntEnum
 
 import numpy as np
 
@@ -7,21 +8,40 @@ from embloks.grid import Grid
 from embloks.materials import Material, Orientation
 
 
+class Tool(IntEnum):
+    # The material tools share their values with Material.
+    VACUUM = Material.VACUUM
+    CONDUCTOR = Material.CONDUCTOR
+    BATTERY = Material.BATTERY
+    CHARGE = 3
+
+    @property
+    def material(self) -> Material | None:
+        """The material this tool paints, or None for the test charge tool."""
+        return None if self == Tool.CHARGE else Material(self.value)
+
+    @property
+    def label(self) -> str:
+        return "test charge" if self == Tool.CHARGE else self.name.lower()
+
+
 @dataclass
 class Brush:
     settings: Settings
-    tool: Material = Material.CONDUCTOR
+    tool: Tool = Tool.CONDUCTOR
     # 0 paints a single cell; r paints a disc of radius r cells.
     radius: int = 0
     orientation: Orientation = Orientation.RIGHT
     # Indices into the settings' value ladders.
     resistance_index: int = field(init=False)
     emf_index: int = field(init=False)
+    charge_index: int = field(init=False)
 
     def __post_init__(self):
         s = self.settings
         self.resistance_index = s.resistance_values.index(s.default_resistance)
         self.emf_index = s.emf_values.index(s.default_emf)
+        self.charge_index = s.test_charge_values.index(s.default_test_charge)
 
     @property
     def resistance(self) -> float:
@@ -31,6 +51,10 @@ class Brush:
     def emf(self) -> float:
         return self.settings.emf_values[self.emf_index]
 
+    @property
+    def charge(self) -> float:
+        return self.settings.test_charge_values[self.charge_index]
+
     def resize(self, delta: int) -> None:
         self.radius = max(0, min(self.settings.max_brush_radius, self.radius + delta))
 
@@ -38,12 +62,14 @@ class Brush:
         self.orientation = self.orientation.rotated()
 
     def adjust_value(self, delta: int) -> None:
-        """Step the current tool's value (resistance or EMF) up or down its ladder."""
+        """Step the current tool's value (resistance, EMF or charge) up or down its ladder."""
         s = self.settings
-        if self.tool == Material.CONDUCTOR:
+        if self.tool == Tool.CONDUCTOR:
             self.resistance_index = _clamp_index(self.resistance_index + delta, s.resistance_values)
-        elif self.tool == Material.BATTERY:
+        elif self.tool == Tool.BATTERY:
             self.emf_index = _clamp_index(self.emf_index + delta, s.emf_values)
+        elif self.tool == Tool.CHARGE:
+            self.charge_index = _clamp_index(self.charge_index + delta, s.test_charge_values)
 
     def footprint(self, center: tuple[int, int], grid: Grid) -> tuple[np.ndarray, np.ndarray]:
         """Columns and rows of the cells covered by the brush at `center`, clipped to the grid."""

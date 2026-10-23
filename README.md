@@ -31,12 +31,13 @@ video driver). Configuration is the `[tool.pytest.ini_options]` section of `pypr
 |---------------------|---------------------------------------------------|
 | Left mouse (drag)   | Paint with the current tool                       |
 | Right mouse (drag)  | Erase (paint vacuum)                              |
-| `1` / `2` / `3`     | Tool: vacuum / conductor / battery                |
-| Up / Down           | Conductor: resistance, battery: EMF (voltage)     |
+| `1` - `4`           | Tool: vacuum / conductor / battery / test charge  |
+| Up / Down           | Tool value: resistance / EMF / charge             |
 | `R`                 | Rotate battery orientation (clockwise)            |
 | `[` / `]` or wheel  | Smaller / larger brush                            |
 | `C`                 | Clear the canvas                                  |
 | `P`                 | Hide / show particles (ions and electrons)        |
+| `E`                 | Hide / show electric field arrows                 |
 | `H`                 | Hide / show the info panel                        |
 | `+` / `-`           | Finer / coarser grid (resets the scene)           |
 | Space               | Pause / resume physics                            |
@@ -83,6 +84,30 @@ remaining cell of the island (or disappear if the whole island is erased). Repai
 another conductive material (e.g. changing resistance) keeps its charges.
 
 Ion rings are only drawn when cells are large enough; on fine grids electrons become single pixels.
+
+### Test charges
+
+Tool `4` places fixed **test charges** (red with `+`, blue with `-`) at cell centres, anywhere on
+the canvas, including on top of conductors. Pick the charge (-10 e to +10 e) with Up/Down. A larger
+brush paints a whole charged plate, one charge per cell. With this tool, right-click removes test
+charges and leaves materials alone. Test charges never move; use them to poke at conductors.
+
+### Electric field
+
+Yellow arrows show the electric field **E** at cell centres: the force a positive charge would
+feel there. It is the sum of the fields of all charges (ions, electrons and test charges), using
+Coulomb's law. Both arrow length and brightness grow with the *logarithm* of the field strength
+(between `e_field_min` and `e_field_max` in [config.py](src/embloks/config.py)), because fields
+near a charge are many times stronger than fields far away. On fine grids only every n-th cell
+gets an arrow, so arrows don't overlap. The info panel shows the exact E value under the mouse.
+
+Each charge is slightly "smeared" (a softening length in config.py), so fields never become
+infinite at a charge. Ions are smeared over about a cell: together, neighbouring ions then act
+like a smooth positive background, which is what lets electrons move freely through a conductor
+instead of each one getting stuck on an ion.
+
+Electrons don't move yet, so each electron and its ion form a small dipole, visible as short
+arrows inside conductors.
 
 The brush outline follows the mouse. The info panel (top-left) shows the current tool, its value,
 the brush size, the number of electrons and islands, and what is in the cell under the mouse
