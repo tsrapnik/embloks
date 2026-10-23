@@ -4,6 +4,7 @@ import pygame
 from embloks.config import Settings
 from embloks.grid import Grid
 from embloks.materials import Material, Materials, Orientation
+from embloks.particles import Particles
 
 
 class MaterialLayer:
@@ -13,10 +14,19 @@ class MaterialLayer:
         self._surface: pygame.Surface | None = None
         self._key: tuple | None = None
 
-    def draw(self, surface: pygame.Surface, grid: Grid, materials: Materials, settings: Settings):
-        key = (id(materials), materials.version, grid)
+    def draw(
+        self,
+        surface: pygame.Surface,
+        grid: Grid,
+        materials: Materials,
+        settings: Settings,
+        show_ions: bool = True,
+    ):
+        key = (id(materials), materials.version, grid, show_ions)
         if key != self._key:
             self._surface = self._build(grid, materials, settings)
+            if show_ions:
+                _draw_ions(self._surface, grid, materials, settings)
             self._key = key
         surface.blit(self._surface, (grid.origin_x, grid.origin_y))
         _draw_battery_marks(surface, grid, materials, settings)
@@ -40,6 +50,37 @@ class MaterialLayer:
         small = pygame.surfarray.make_surface(image)
         # pygame.transform.scale is nearest-neighbour, so cells stay crisp squares.
         return pygame.transform.scale(small, (grid.pixel_width, grid.pixel_height))
+
+
+def _draw_ions(surface: pygame.Surface, grid: Grid, materials: Materials, settings: Settings):
+    """A small ring at the centre of every conductive cell: its fixed positive ion.
+
+    Drawn onto the cached material image (in grid-local pixels), and only on cells
+    big enough to show it.
+    """
+    size = grid.cell_px
+    if size < settings.min_cell_px_for_glyphs:
+        return
+    radius = max(2, round(size * 0.12))
+    for col, row in zip(*np.nonzero(materials.conductive)):
+        centre = (col * size + size // 2, row * size + size // 2)
+        pygame.draw.circle(surface, settings.ion_color, centre, radius, width=max(1, size // 16))
+
+
+def draw_electrons(surface: pygame.Surface, grid: Grid, particles: Particles, settings: Settings):
+    if len(particles) == 0:
+        return
+    xy = np.array([grid.origin_x, grid.origin_y]) + particles.pos * grid.cell_px
+    radius = grid.cell_px * settings.electron_radius
+    if len(particles) <= settings.max_electrons_as_circles and radius >= 1.5:
+        for x, y in xy:
+            pygame.draw.circle(surface, settings.electron_color, (x, y), radius)
+        return
+    pixels = pygame.surfarray.pixels3d(surface)
+    ix = np.clip(xy[:, 0].astype(int), 0, pixels.shape[0] - 1)
+    iy = np.clip(xy[:, 1].astype(int), 0, pixels.shape[1] - 1)
+    pixels[ix, iy] = settings.electron_color
+    del pixels  # Release the surface lock.
 
 
 def _draw_battery_marks(

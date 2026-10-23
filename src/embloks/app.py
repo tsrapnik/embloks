@@ -4,8 +4,9 @@ import pygame
 from embloks import render
 from embloks.config import Settings
 from embloks.grid import Grid
-from embloks.materials import Material, Materials, Orientation
+from embloks.materials import Material, Orientation
 from embloks.ui import Brush, line_cells
+from embloks.world import World
 
 DENSITY_UP_KEYS = {pygame.K_PLUS, pygame.K_EQUALS, pygame.K_KP_PLUS}
 DENSITY_DOWN_KEYS = {pygame.K_MINUS, pygame.K_KP_MINUS}
@@ -30,6 +31,7 @@ class App:
         self.running = True
         self.paused = False
         self.show_hud = True
+        self.show_particles = True
         self.brush = Brush(self.settings)
         self.material_layer = render.MaterialLayer()
         self.hovered_cell: tuple[int, int] | None = None
@@ -39,7 +41,7 @@ class App:
         """Rebuild the grid at the current density and restart the simulation."""
         s = self.settings
         self.grid = Grid.fit(s.grid_density, s.window_width, s.window_height)
-        self.materials = Materials(self.grid.cols, self.grid.rows)
+        self.world = World(self.grid.cols, self.grid.rows, s)
         self.sim_time = 0.0
         self.tick_count = 0
         # Real time not yet consumed by physics ticks.
@@ -107,7 +109,9 @@ class App:
         elif key == pygame.K_DOWN:
             brush.adjust_value(-1)
         elif key == pygame.K_c:
-            self.materials.clear()
+            self.world.clear()
+        elif key == pygame.K_p:
+            self.show_particles = not self.show_particles
         elif key == pygame.K_h:
             self.show_hud = not self.show_hud
 
@@ -122,10 +126,10 @@ class App:
         cols = np.concatenate([f[0] for f in footprints])
         rows = np.concatenate([f[1] for f in footprints])
         if self._stroke_button == ERASE_BUTTON:
-            self.materials.paint(cols, rows, Material.VACUUM)
+            self.world.paint(cols, rows, Material.VACUUM)
         else:
             b = self.brush
-            self.materials.paint(cols, rows, b.tool, b.resistance, b.emf, b.orientation)
+            self.world.paint(cols, rows, b.tool, b.resistance, b.emf, b.orientation)
         self._stroke_cell = cell
 
     def advance(self, frame_seconds: float) -> None:
@@ -152,8 +156,12 @@ class App:
     def render(self) -> None:
         s = self.settings
         self.screen.fill(s.background_color)
-        self.material_layer.draw(self.screen, self.grid, self.materials, s)
+        self.material_layer.draw(
+            self.screen, self.grid, self.world.materials, s, show_ions=self.show_particles
+        )
         render.draw_grid_lines(self.screen, self.grid, s)
+        if self.show_particles:
+            render.draw_electrons(self.screen, self.grid, self.world.particles, s)
         if self.hovered_cell is not None:
             cells = self.brush.footprint(self.hovered_cell, self.grid)
             render.draw_brush_outline(self.screen, self.grid, cells, s)
@@ -171,22 +179,29 @@ class App:
             tool += f"   EMF {b.emf:g}   + side {b.orientation.name.lower()}"
         lines = [
             tool,
-            f"Brush radius {b.radius}",
-            "1/2/3 tool   Up/Down value   R rotate   [ ] / wheel brush   C clear   H hide",
+            f"Brush radius {b.radius}   Electrons {len(self.world.particles)}"
+            f"   Islands {self.world.connectivity.count}",
+            "1/2/3 tool   Up/Down value   R rotate   [ ] / wheel brush   C clear"
+            "   P particles   H hide",
         ]
         if self.hovered_cell is not None:
             lines.append(f"Cell {self.hovered_cell}: {self.describe_cell(*self.hovered_cell)}")
         return lines
 
     def describe_cell(self, col: int, row: int) -> str:
-        m = self.materials
+        m = self.world.materials
         kind = Material(m.kind[col, row])
+        if kind == Material.VACUUM:
+            return "vacuum"
         if kind == Material.CONDUCTOR:
-            return f"conductor, resistance {m.resistance[col, row]:g}"
-        if kind == Material.BATTERY:
+            text = f"conductor, resistance {m.resistance[col, row]:g}"
+        else:
             side = Orientation(m.orientation[col, row]).name.lower()
-            return f"battery, EMF {m.emf[col, row]:g}, + side {side}"
-        return "vacuum"
+            text = f"battery, EMF {m.emf[col, row]:g}, + side {side}"
+        cell_c, cell_r = self.world.particles.cells()
+        electrons = np.count_nonzero((cell_c == col) & (cell_r == row))
+        island = self.world.connectivity.labels[col, row]
+        return f"{text}, island {island}, {electrons} electron(s)"
 
     def update_caption(self) -> None:
         state = "paused" if self.paused else "running"

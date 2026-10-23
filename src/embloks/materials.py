@@ -41,6 +41,11 @@ class Materials:
         # Bumped on every change, so caches (rendering, physics) know when to rebuild.
         self.version = 0
 
+    @property
+    def conductive(self) -> np.ndarray:
+        """Cells that hold a fixed ion and mobile electrons (conductors and batteries)."""
+        return self.kind != Material.VACUUM
+
     def paint(
         self,
         cols: np.ndarray,

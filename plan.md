@@ -85,8 +85,10 @@ source, with `∫ f/q · dl = ℰ`. Implementation:
   not a voltage source.
 
 ### 9. Units & constants
-Simulation units: `k = 1/(4πε0)` = 1, electron mass = 1, e = 1, world width fixed; grid density
-changes cell size. `c` is a tunable setting (magnetic effects scale with v²/c², so a low c makes
+Simulation units: `k = 1/(4πε0)` = 1, electron mass = 1, e = 1, **length unit = 1 cell**.
+Physics is then independent of grid density (density only sets how many cells fit on screen).
+Ions are not stored as particles: every conductive cell implicitly has one at its centre, derived
+from the materials, so ions and cells can never get out of sync. `c` is a tunable setting (magnetic effects scale with v²/c², so a low c makes
 them visible). Changing grid density resets the scene (or nearest-neighbour resample — later).
 
 ### 10. Performance
@@ -108,8 +110,9 @@ src/embloks/
   app.py                        # main loop: input → physics substeps → render
   grid.py                       # Grid: screen layout, cell <-> pixel mapping
   materials.py                  # Materials: kind, resistance, emf, orientation arrays [col, row]
-  connectivity.py               # islands (4-neighbour), wall tests incl. battery side walls
-  particles.py                  # Particles SoA: pos, vel, charge, mass, mobile, softening
+  connectivity.py               # islands (4-neighbour), open faces incl. battery side walls
+  world.py                      # World: materials + connectivity + electrons, kept in sync on paint
+  particles.py                  # Particles SoA (electrons only): pos, vel, charge, mass
   fields.py                     # field_at(points, exclude) -> E, Bz; ion-field cache; poynting
   physics.py                    # step(): forces, implicit drag, integrate, confine
   render.py                     # layers: materials, grid lines, particles, E, B, S

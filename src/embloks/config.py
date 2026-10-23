@@ -41,6 +41,19 @@ class Settings:
     battery_plus_color: tuple[int, int, int] = (220, 60, 60)
     battery_minus_color: tuple[int, int, int] = (60, 110, 230)
 
+    # Simulation units: lengths in cells, e = electron mass = 1.
+    elementary_charge: float = 1.0
+    electron_mass: float = 1.0
+    # Electrons per conductive cell; each carries -e/n so cells stay neutral.
+    carriers_per_cell: int = 1
+
+    ion_color: tuple[int, int, int] = (200, 40, 40)
+    electron_color: tuple[int, int, int] = (90, 170, 255)
+    # Electron dot radius as a fraction of the cell size.
+    electron_radius: float = 0.12
+    # Above this many electrons, draw single pixels instead of circles (much faster).
+    max_electrons_as_circles: int = 4000
+
     hud_font_size: int = 20
     hud_text_color: tuple[int, int, int] = (220, 220, 230)
     hud_background: tuple[int, int, int, int] = (0, 0, 0, 160)

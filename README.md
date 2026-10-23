@@ -36,6 +36,7 @@ video driver). Configuration is the `[tool.pytest.ini_options]` section of `pypr
 | `R`                 | Rotate battery orientation (clockwise)            |
 | `[` / `]` or wheel  | Smaller / larger brush                            |
 | `C`                 | Clear the canvas                                  |
+| `P`                 | Hide / show particles (ions and electrons)        |
 | `H`                 | Hide / show the info panel                        |
 | `+` / `-`           | Finer / coarser grid (resets the scene)           |
 | Space               | Pause / resume physics                            |
@@ -62,11 +63,30 @@ Every cell is one of:
   before painting. Batteries placed end to end add up like cells in series.
 
 Cells only connect through shared edges: two cells touching only at a corner are *not*
-connected. Dragging the brush always paints an edge-connected path, so a quick diagonal stroke
-still gives an unbroken wire.
+connected, and a battery's two side faces are walls. Dragging the brush always paints an
+edge-connected path, so a quick diagonal stroke still gives an unbroken wire. A group of connected
+cells is called an *island*; charge can never leave its island.
+
+### Charges
+
+Every conductive cell (conductor or battery) holds:
+
+- one fixed **positive ion** (red ring) at its centre, with charge +e, and
+- **electrons** (blue dots) that will be free to move within their island once physics is
+  added. By default there is one electron per cell; `carriers_per_cell` in
+  [config.py](src/embloks/config.py) sets more, each carrying a fraction -e/n so cells stay neutral.
+
+Painting a conductive cell adds its ion and electrons. Erasing a cell removes its ion and the same
+number of electrons from that island: first electrons inside the erased cell, then the nearest
+ones. If more electrons than that were in the erased cell, the extras are pushed into the nearest
+remaining cell of the island (or disappear if the whole island is erased). Repainting a cell with
+another conductive material (e.g. changing resistance) keeps its charges.
+
+Ion rings are only drawn when cells are large enough; on fine grids electrons become single pixels.
 
 The brush outline follows the mouse. The info panel (top-left) shows the current tool, its value,
-the brush size, and what is in the cell under the mouse.
+the brush size, the number of electrons and islands, and what is in the cell under the mouse
+(material, island number and electron count).
 
 The window title shows the frame rate, simulation time, paused state and grid size
 (columns x rows).
