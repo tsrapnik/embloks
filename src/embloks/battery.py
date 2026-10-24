@@ -8,7 +8,8 @@ terminals and moves electrons from the + terminal to the - terminal at
     current = (EMF - V) / internal_resistance
 
 so it holds V = EMF exactly when no current flows, and V = EMF - I * R_internal
-under load: a textbook voltage source. Physically this stands in for the ions
+under load: a textbook voltage source. The update is implicit (see pump), so it
+stays stable however strongly the terminal voltage reacts to the moved charge. Physically this stands in for the ions
 that carry charge through a real battery's electrolyte: electrons don't cross
 it, charge is taken from one electrode and delivered at the other.
 """
@@ -100,14 +101,21 @@ def terminal_potential(world, potential: np.ndarray, cell: tuple[int, int]) -> f
     None if the terminal isn't a conductor. Averaging damps the noise from
     individual electrons passing right by the cell centre.
     """
+    if not _wired(world, cell):
+        return None
     m, labels = world.materials, world.connectivity.labels
     c, r = cell
-    if not (0 <= c < m.cols and 0 <= r < m.rows) or labels[c, r] < 0:
-        return None
     c0, c1 = max(c - 1, 0), min(c + 2, m.cols)
     r0, r1 = max(r - 1, 0), min(r + 2, m.rows)
     same_island = labels[c0:c1, r0:r1] == labels[c, r]
     return float(potential[c0:c1, r0:r1][same_island].mean())
+
+
+def _wired(world, cell: tuple[int, int]) -> bool:
+    """Whether a terminal cell is a conductor (a battery only works with both wired)."""
+    m = world.materials
+    c, r = cell
+    return 0 <= c < m.cols and 0 <= r < m.rows and world.connectivity.labels[c, r] >= 0
 
 
 def probe_cells(world) -> np.ndarray:
@@ -120,9 +128,25 @@ def probe_cells(world) -> np.ndarray:
     return mask
 
 
-def pump(world, potential: np.ndarray, dt: float, settings: Settings, time: float = 0.0) -> None:
-    """Run every battery stack for dt at simulation `time`, moving electrons between terminals."""
+def pump(
+    world,
+    potential: np.ndarray,
+    dt: float,
+    settings: Settings,
+    time: float = 0.0,
+    stiffness: dict[Stack, float] | None = None,
+) -> None:
+    """Run every battery stack for dt at simulation `time`, moving electrons between terminals.
+
+    `stiffness` (see terminal_stiffness): how much each stack's terminal voltage
+    rises per unit of charge it moves. With it the current is the backward-Euler
+    step of (EMF - V) / R, i.e. (EMF - V) / (R + stiffness * dt): the same steady
+    state, but no overshoot. Explicitly, a battery whose transfers move its own
+    voltage by more than 2 R / dt per unit charge would swing ever harder between
+    its terminals; in 2D a single electron moves it by ~2-3.
+    """
     p = world.particles
+    stiffness = stiffness or {}
     for stack in world.stacks:
         v_low = terminal_potential(world, potential, stack.low)
         v_high = terminal_potential(world, potential, stack.high)
@@ -130,7 +154,8 @@ def pump(world, potential: np.ndarray, dt: float, settings: Settings, time: floa
             for state in (world.pump_charge, world.pump_current, world.pump_flow):
                 state.pop(stack, None)
             continue
-        current = (stack.emf_at(time) - (v_high - v_low)) / stack.internal_resistance
+        resistance = stack.internal_resistance + stiffness.get(stack, 0.0) * dt
+        current = (stack.emf_at(time) - (v_high - v_low)) / resistance
         # Positive current = conventional current low -> high inside the battery,
         # i.e. electrons taken at the high terminal and delivered at the low one.
         owed = world.pump_charge.get(stack, 0.0) + current * dt
@@ -159,17 +184,36 @@ def pump(world, potential: np.ndarray, dt: float, settings: Settings, time: floa
             break
 
 
-def current_grid(world, fast: bool = False) -> np.ndarray:
+def terminal_stiffness(world, potential_of) -> dict[Stack, float]:
+    """Rise in each connected stack's terminal voltage per unit charge it moves.
+
+    `potential_of(pos, charge)` gives the potential (cols, rows) of point charges.
+    Stacks that share terminals push each other's voltages too: each stack gets the
+    sum of the magnitudes of its effects on all of them (a Gershgorin bound on the
+    coupled system), so even parallel batteries can't overshoot.
+    """
+    stacks = [st for st in world.stacks if _wired(world, st.low) and _wired(world, st.high)]
+    effect = np.zeros((len(stacks), len(stacks)))
+    for i, stack in enumerate(stacks):
+        # Moving a unit charge from the low terminal to the high one.
+        potential = potential_of(np.array([stack.high, stack.low]) + 0.5, np.array([1.0, -1.0]))
+        for j, other in enumerate(stacks):
+            effect[i, j] = (terminal_potential(world, potential, other.high)
+                            - terminal_potential(world, potential, other.low))
+    return {stack: float(np.abs(effect[i]).sum()) for i, stack in enumerate(stacks)}
+
+
+def current_grid(world) -> np.ndarray:
     """The batteries' internal currents as a current density, shape (cols, rows, 2).
 
     Pumped electrons jump across a battery instead of moving through it, so they
     carry no velocity; this puts the pump current back along the stack's cells,
-    closing the current loop for magnetic fields. `fast` uses the briefly averaged
-    flow (for physics) instead of the display-averaged current.
+    closing the current loop for the magnetic field. It uses the briefly averaged
+    flow, which follows an AC source, not the display-averaged current.
     """
     m = world.materials
     grid = np.zeros((m.cols, m.rows, 2))
-    for stack, current in (world.pump_flow if fast else world.pump_current).items():
+    for stack, current in world.pump_flow.items():
         # Positive current flows from the low terminal towards the high one.
         direction = np.sign(np.subtract(stack.high, stack.low))
         for cell in stack.cells:

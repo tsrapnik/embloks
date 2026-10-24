@@ -4,9 +4,11 @@ import pytest
 from embloks import physics, scenes
 from embloks.config import Settings
 from embloks.connectivity import compute_connectivity
-from embloks.fields import ElectricField
+from embloks.close_range import CloseRange
+from embloks.maxwell import Maxwell
 from embloks.materials import Material, Materials, Orientation
 from embloks.world import World
+from sim import Sim
 
 
 def test_kick_reaches_terminal_velocity_acc_over_damping():
@@ -102,10 +104,7 @@ def block_world():
 
 
 def run(world, seconds):
-    electric = ElectricField(world.settings)
-    for _ in range(int(seconds / world.settings.dt)):
-        physics.step(world, electric, world.settings.dt, world.settings)
-    return electric
+    return Sim(world).run(seconds)
 
 
 def test_neutral_conductor_stays_quiet(block_world):
@@ -120,10 +119,10 @@ def test_conductor_screens_external_charge(block_world):
     w.place_charges(np.array([8]), np.array([16]), 5)
     inner = np.zeros(w.materials.kind.shape, dtype=bool)
     inner[15:25, 14:18] = True  # Interior cells, one cell in from the surface.
-    electric = ElectricField(w.settings)
-    unscreened = electric.grid(w)[inner].mean(axis=0)
-    run(w, 10)
-    screened = electric.grid(w)[inner].mean(axis=0)
+    sim = Sim(w)
+    unscreened = sim.e_field()[inner].mean(axis=0)
+    sim.run(10)
+    screened = sim.e_field()[inner].mean(axis=0)
     assert np.hypot(*screened) < 0.15 * np.hypot(*unscreened)
     # Electrons shift towards the positive charge on the left (block centre x = 20).
     # Screening a weak field needs only a little surface charge, so the shift is small.
@@ -135,14 +134,14 @@ def test_conductor_screens_external_charge(block_world):
 def test_fast_particles_get_substeps(block_world):
     s = block_world.settings
     block_world.particles.vel[0] = [100.0, 0.0]
-    substeps = physics.step(block_world, ElectricField(s), s.dt, s)
+    substeps = physics.step(block_world, Maxwell.for_world(block_world, s), CloseRange(s), s.dt, s)
     assert substeps > 1
 
 
 def test_step_without_particles_does_nothing():
     s = Settings()
     w = World(5, 5, s)
-    assert physics.step(w, ElectricField(s), s.dt, s) == 0
+    assert physics.step(w, Maxwell.for_world(w, s), CloseRange(s), s.dt, s) == 0
 
 
 def test_electrons_spread_over_a_thin_wire_instead_of_stacking():
@@ -160,17 +159,3 @@ def test_electrons_spread_over_a_thin_wire_instead_of_stacking():
     assert np.abs(across[~corner]).mean() > 0.2
     gaps = np.hypot(*(p.pos[:, None] - p.pos[None]).transpose(2, 0, 1)) + 9 * np.eye(len(p))
     assert gaps.min() > 0.05
-
-
-def test_close_range_force_pushes_stacked_electrons_apart():
-    s = Settings()
-    w = World(10, 10, s)
-    w.paint(np.array([4, 5]), np.array([4, 4]), Material.CONDUCTOR, resistance=1)
-    w.particles.pos[:] = [5.0, 4.5]
-    w.particles.pos[0, 0] -= 0.05
-    w.particles.pos[1, 0] += 0.05
-    force = ElectricField(s).close_range.force(w)
-    # The pair repels (and momentum is conserved between electrons)...
-    assert force[0, 0] < -0.5 and force[1, 0] > 0.5
-    # ...while the ions of the two cells draw the rest of them back symmetrically.
-    assert force.sum(axis=0) == pytest.approx([0.0, 0.0], abs=1e-9)

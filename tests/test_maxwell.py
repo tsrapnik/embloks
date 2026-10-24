@@ -31,7 +31,7 @@ def gaussian_pulse(mx: Maxwell, col: float, row: float, width2: float) -> None:
 
 
 def test_waves_travel_at_the_speed_of_light():
-    s = Settings(absorbing_margin=40)
+    s = Settings(absorbing_margin=40, speed_of_light=2.0)  # Slow enough to stay on the grid.
     mx = Maxwell(80, 80, s)
     gaussian_pulse(mx, 40, 40, 0.5)
     rho, current = np.zeros((mx.nx, mx.ny)), np.zeros((mx.nx, mx.ny, 2))
@@ -101,38 +101,21 @@ def app():
     pygame.quit()
 
 
-def test_dc_circuit_carries_the_same_current_in_both_modes(app):
-    """Steady DC has no induction or radiation, so both field modes must agree."""
-    currents = {}
-    for dynamic in (False, True):
-        app.load_scene(0)
-        app.world.rng = np.random.default_rng(0)
-        if dynamic:
-            app.toggle_dynamic_fields()
-        for _ in range(int(60 / app.settings.dt)):
-            app.step(app.settings.dt)
-        samples = []
-        for _ in range(int(30 / app.settings.dt)):
-            app.step(app.settings.dt)
-            samples.append(abs(physics.current_density(app.world)[13:27, 7, 0].mean()))
-        currents[dynamic] = np.mean(samples)
-    assert currents[True] == pytest.approx(currents[False], rel=0.25)
-
-
-def test_m_toggles_dynamic_fields_and_they_keep_gauss_law(app):
-    assert app.maxwell is None
+def test_gauss_law_holds_after_stepping_a_scene(app):
     app.load_scene(1)  # Screening: conductor plus test charges.
-    pygame.event.post(pygame.event.Event(pygame.KEYDOWN, key=pygame.K_m, mod=0))
-    app.handle_events()
-    assert app.maxwell is not None and app.settings.dynamic_fields
     for _ in range(30):
         app.step(app.settings.dt)
     mx = app.maxwell
-    rho = mx.charge(app.world, physics.CloudInCell(app.world.particles.pos, mx.cols, mx.rows))
-    for _ in range(app.settings.dynamic_smoothing_passes):
-        rho = _smooth(rho)
+    rho, _ = mx.sources(app.world)
     assert np.abs(mx.divergence() - 4 * np.pi * rho).max() < 1e-9
-    app.render()
-    pygame.event.post(pygame.event.Event(pygame.KEYDOWN, key=pygame.K_m, mod=0))
-    app.handle_events()
-    assert app.maxwell is None
+
+
+def test_smoothing_the_visible_grid_matches_smoothing_the_whole_grid():
+    s = Settings()
+    mx = Maxwell(9, 7, s)
+    values = np.random.default_rng(1).normal(size=(9, 7, 3))
+    whole = np.zeros((mx.nx, mx.ny, 3))
+    mx.visible(whole)[...] = values
+    for _ in range(s.smoothing_passes):
+        whole = _smooth(whole)
+    np.testing.assert_allclose(mx.smoothed(values), whole, atol=1e-15)

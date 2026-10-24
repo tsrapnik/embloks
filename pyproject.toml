@@ -8,6 +8,7 @@ dependencies = [
     "pygame-ce>=2.5",
     "numpy>=2.0",
     "scipy>=1.13",
+    "numba>=0.61",
 ]
 
 [project.optional-dependencies]

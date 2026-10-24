@@ -2,8 +2,8 @@ import numpy as np
 import pytest
 
 from embloks.config import Settings
-from embloks.fields import MagneticField, poynting
-from embloks.world import World
+from embloks.fields import poynting
+from test_magnetism import steady_b
 
 
 def test_poynting_is_perpendicular_to_e_with_magnitude_e_b_over_mu0():
@@ -19,12 +19,11 @@ def test_poynting_is_perpendicular_to_e_with_magnitude_e_b_over_mu0():
 
 def test_energy_flows_into_a_current_carrying_wire_from_both_sides():
     s = Settings()
-    w = World(80, 60, s)
     current = np.zeros((80, 60, 2))
     current[:, 30, 0] = 1.0  # Wire along row 30, conventional current to the right...
     e = np.zeros((80, 60, 2))
     e[..., 0] = 0.1  # ...driven by a field pointing the same way.
-    flow = poynting(e, MagneticField(s).grid(w, current), s)
+    flow = poynting(e, steady_b(current, s, seconds=20), s)
     assert flow[40, 25, 1] > 0  # Above the wire (smaller y): pointing down, into it.
     assert flow[40, 35, 1] < 0  # Below the wire: pointing up, into it.
     assert flow[40, 25, 0] == pytest.approx(0) and flow[40, 35, 0] == pytest.approx(0)

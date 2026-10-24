@@ -198,14 +198,15 @@ def test_displayed_e_field_is_smoothed_but_follows_edits_immediately(app):
     app.render()
     app.paused = True
     # Painting while paused (no simulated time passes) must still show up at once.
+    before = app.display_fields()[0].copy()
     press(app, pygame.K_3)
     click(app, (14, 10), 1)
-    np.testing.assert_allclose(app.display_e_field(), app.electric.grid(app.world))
+    np.testing.assert_allclose(app.display_fields()[0], app.maxwell.node_fields()[0])
+    assert not np.allclose(app.display_fields()[0], before)
     # While running, the display lags behind a sudden change in the electrons.
     app.paused = False
-    app.world.particles.pos[:] += 0.3
-    app.sim_time += 0.01
-    shown, actual = app.display_e_field(), app.electric.grid(app.world)
+    app.step(app.settings.dt)
+    shown, actual = app.display_fields()[0], app.maxwell.node_fields()[0]
     assert not np.allclose(shown, actual)
 
 
@@ -238,7 +239,7 @@ def test_info_panel_numbers_are_filtered_while_hovering(app):
     app.world.particles.pos[:] += 0.2  # ...but electron motion is smoothed.
     now[0] += 0.05
     before = float(app.cell_readout._values["V"])
-    exact = app.electric.potential_grid(app.world)[3, 3]
+    exact = app.potential_grid()[3, 3]
     app.render()
     shown = float(app.cell_readout._values["V"])
     assert abs(shown - before) < abs(exact - before)

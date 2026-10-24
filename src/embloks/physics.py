@@ -3,7 +3,7 @@ import numpy as np
 from embloks.config import Settings
 from embloks.connectivity import Connectivity
 from embloks import battery
-from embloks.fields import CloudInCell, ElectricField, MagneticField
+from embloks.close_range import CloseRange
 from embloks.maxwell import Maxwell
 
 # Particles stopped at a wall stay this far inside their cell.
@@ -93,51 +93,34 @@ def confine(
     return pos, vel
 
 
-def step(
-    world, electric: ElectricField, dt: float, settings: Settings, maxwell: Maxwell | None = None
-) -> int:
-    """Advance the electrons (and, in dynamic mode, the fields) by dt.
+def step(world, maxwell: Maxwell, close_range: CloseRange, dt: float, settings: Settings) -> int:
+    """Advance the electrons and the fields by dt.
 
     Returns the number of substeps used. Substeps keep every move below max_step
     cells, so confine() sees at most one face crossing per axis. Forces are the
-    Lorentz force q (E + v x B), read back from the grid with the same weights used
-    to deposit charge and current (no self-force). With `maxwell`, E and B come from
-    the time-stepped fields, which then advance by dt with the new charge and current;
-    otherwise they are the instant fields of the present charges and currents.
+    Lorentz force q (E + v x B) of the fields at each electron, plus the close-range
+    forces. The fields then advance by dt with the new charge and current.
     """
     p = world.particles
     s = settings
-    batteries = battery.current_grid(world, fast=True)
+    batteries = battery.current_grid(world)
     if len(p) == 0:
-        if maxwell is not None:
-            maxwell.advance(world, dt, batteries)
+        maxwell.advance(world, dt, batteries)
         return 0
     speed = np.sqrt((p.vel**2).sum(axis=1)).max()
     substeps = int(np.clip(np.ceil(speed * dt / s.max_step), 1, s.max_substeps))
     h = dt / substeps
-    magnetic = MagneticField(s)
-    m = world.materials
     for _ in range(substeps):
         cols, rows = p.cells()
-        # Instant fields: one set of cloud-in-cell weights serves every deposit and read-back.
-        if maxwell is not None:
-            fields = maxwell.gather(p.pos)
-        else:
-            cic = CloudInCell(p.pos, m.cols, m.rows)
-            current = magnetic.electron_current(world, cic) + batteries
-            grids = np.concatenate(
-                [electric.grid(world, cic), magnetic.grid(world, current)[..., None]], axis=-1
-            )
-            fields = cic.gather(grids)
+        fields = maxwell.gather(p.pos)
         acc = (p.charge / p.mass)[:, None] * lorentz_field(fields[:, :2], p.vel, fields[:, 2])
-        if electric.close_range.enabled:
-            acc += electric.close_range.force(world) / p.mass[:, None]
+        if close_range.enabled:
+            acc += close_range.force(world) / p.mass[:, None]
         vel = kick(p.vel, acc, damping_rates(world, cols, rows, s), h)
         move = vel * h
         # Safety net if velocity jumped within this substep: never move further than max_step.
         length = np.sqrt((move**2).sum(axis=1))
         move *= np.minimum(1, s.max_step / np.maximum(length, 1e-300))[:, None]
         p.pos, p.vel = confine(p.pos, p.pos + move, vel, world.connectivity, s.wall_restitution)
-    if maxwell is not None:
-        maxwell.advance(world, dt, batteries)
+    maxwell.advance(world, dt, batteries)
     return substeps

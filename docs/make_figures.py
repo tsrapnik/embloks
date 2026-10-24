@@ -14,39 +14,61 @@ import numpy as np
 from matplotlib.patches import Rectangle
 from scipy.spatial import cKDTree
 
-from embloks import battery, physics, scenes
+from embloks import scenes
+from embloks.close_range import compact_g, grid_force, point_correction
 from embloks.config import Settings
-from embloks.fields import (CloudInCell, ElectricField, GridKernel, _close_field, coulomb_field,
-                            field_kernels, softened_inv_r3)
+from embloks.fields import CloudInCell
 from embloks.materials import Material
+from embloks.maxwell import Maxwell
+from embloks.simulation import Simulation
 from embloks.world import World
 
 OUT = Path(__file__).parent / "images"
 S = Settings()
-EPS = S.conductor_softening
 EPS_E = S.electron_softening
+PARAMS = (S.electron_softening, S.smoothing_passes, S.electron_cutoff)
 # One-dimensional cloud-in-cell weights of an evenly spread cell: 1/8, 3/4, 1/8.
 SPREAD = np.array([1 / 8, 3 / 4, 1 / 8])
 
 plt.rcParams.update({"figure.facecolor": "white", "savefig.facecolor": "white", "font.size": 10})
 
 
-def gaussian(x, y, cx, cy, eps):
-    """In-plane slice of the density of a unit charge smeared with softening eps.
+def smooth_nodes(values):
+    """Node values (n, n) after the app's smoothing passes (zero beyond the edges)."""
+    from embloks.maxwell import _smooth
 
-    This Gaussian density is exactly the one whose potential is k q erf(r / eps) / r.
-    """
-    r2 = (x - cx) ** 2 + (y - cy) ** 2
-    return np.exp(-r2 / eps**2) / (np.pi**1.5 * eps**3)
-
-
-def softened_force(r, eps):
-    """Repulsion between two unit charges at distance r, one smeared with softening eps."""
-    return r * softened_inv_r3(r**2, eps)
+    for _ in range(S.smoothing_passes):
+        values = _smooth(values)
+    return values
 
 
-def cell_lines(ax, lo=-1.5, hi=1.5):
-    for v in np.arange(np.ceil(lo + 0.5), hi, 1.0) - 0.5:
+def compact_density(x, y, cx, cy, eps):
+    """Density of a unit line charge smeared as a 2D Gaussian of width eps."""
+    return np.exp(-((x - cx) ** 2 + (y - cy) ** 2) / eps**2) / (np.pi * eps**2)
+
+
+def compact_force(r, eps=EPS_E):
+    """Repulsion between two unit line charges at distance r, smeared with width eps."""
+    return r * compact_g(r**2, eps)
+
+
+def node_image(ax, values, half, cmap, vmax, labels=False):
+    """Node values (n, n), node (n // 2, n // 2) at the origin, as squares one cell wide."""
+    n = values.shape[0]
+    extent = (-half - 0.5, half + 0.5, half + 0.5, -half - 0.5)
+    k = n // 2 - half
+    view = values[k : k + 2 * half + 1, k : k + 2 * half + 1]
+    ax.imshow(view.T, extent=extent, cmap=cmap, vmin=0, vmax=vmax)
+    if labels:
+        for (i, j), v in np.ndenumerate(view):
+            if v > 0.004:
+                ax.text(i - half, j - half, f"{100 * v:.0f}%" if v >= 0.01 else "<1%", ha="center",
+                        va="center", fontsize=8, color="k" if v > 0.5 * vmax else "w")
+    return view
+
+
+def cell_lines(ax, half):
+    for v in np.arange(-half, half + 1) - 0.5:
         ax.axhline(v, color="w", lw=0.6, alpha=0.6)
         ax.axvline(v, color="w", lw=0.6, alpha=0.6)
 
@@ -55,32 +77,27 @@ def outline_cell(ax, color="c"):
     ax.add_patch(Rectangle((-0.5, -0.5), 1, 1, fill=False, ec=color, lw=2))
 
 
-# Coordinates in cells, the cell of interest centred on (0, 0).
-x, y = np.meshgrid(np.linspace(-1.5, 1.5, 301), np.linspace(-1.5, 1.5, 301), indexing="xy")
-EXTENT = (-1.5, 1.5, 1.5, -1.5)
-
-
 def ion_figure():
-    fig, axs = plt.subplots(1, 3, figsize=(15, 4.6))
-    # (a) What the grid stores: the ion's charge per cell centre.
-    stencil = np.outer(SPREAD, SPREAD)
-    axs[0].imshow(stencil.T, extent=EXTENT, cmap="inferno", vmin=0, vmax=0.6)
-    for (i, j), v in np.ndenumerate(stencil):
-        axs[0].text(i - 1, j - 1, f"{v * 64:.0f}/64", ha="center", va="center",
-                    color="k" if v > 0.3 else "w", fontsize=11)
+    fig, axs = plt.subplots(1, 3, figsize=(15, 4.8))
+    n, half = 15, 3
+    # (1) What the cloud-in-cell deposit stores: the ion's charge per cell centre.
+    shares = np.zeros((n, n))
+    shares[n // 2 - 1 : n // 2 + 2, n // 2 - 1 : n // 2 + 2] = np.outer(SPREAD, SPREAD)
+    node_image(axs[0], shares, half, "inferno", 0.6, labels=True)
     outline_cell(axs[0])
-    axs[0].set_title("1. Grid: share of the ion's charge\nput on each cell centre")
-    # (b) Long range: those shares, each smeared with conductor_softening.
-    grid = sum(stencil[i, j] * gaussian(x, y, i - 1, j - 1, EPS) for i in range(3) for j in range(3))
-    im = axs[1].imshow(grid, extent=EXTENT, cmap="inferno", vmin=0)
-    cell_lines(axs[1])
+    axs[0].set_title("1. Deposit: share of the ion's charge\nput on each cell centre")
+    # (2) Long range: those shares after the smoothing passes.
+    smoothed = smooth_nodes(shares)
+    node_image(axs[1], smoothed, half, "inferno", 0.6, labels=True)
     outline_cell(axs[1])
-    fig.colorbar(im, ax=axs[1], label="charge density (per unit charge)")
-    axs[1].set_title(f"2. Long range (grid fields):\nshares smeared with softening {EPS}")
-    # (c) Close range: a uniform square.
+    axs[1].set_title(f"2. Long range (grid fields): after {S.smoothing_passes}\n"
+                     "passes of the 1-2-1 smoothing filter")
+    # (3) Close range: a uniform square.
+    x, y = np.meshgrid(np.linspace(-half - 0.5, half + 0.5, 401), np.linspace(-half - 0.5, half + 0.5, 401))
     square = ((np.abs(x) < 0.5) & (np.abs(y) < 0.5)).astype(float)
-    axs[2].imshow(square, extent=EXTENT, cmap="inferno", vmin=0, vmax=1.6)
-    cell_lines(axs[2])
+    axs[2].imshow(square, extent=(-half - 0.5, half + 0.5, half + 0.5, -half - 0.5), cmap="inferno",
+                  vmin=0, vmax=1.6)
+    cell_lines(axs[2], half)
     outline_cell(axs[2])
     axs[2].set_title("3. Close range (within electron_cutoff):\ncharge spread evenly over the cell")
     for ax in axs:
@@ -94,45 +111,40 @@ def ion_figure():
 def electron_figure():
     positions = [((0.0, 0.0), "at the cell centre"), ((0.25, 0.0), "0.25 cell off centre"),
                  ((0.5, 0.0), "on a cell edge"), ((0.5, 0.5), "on a cell corner")]
-    fig, axs = plt.subplots(2, 4, figsize=(17, 8.4))
-    top = gaussian(0, 0, 0, 0, EPS)
+    n, half = 15, 3
+    fig, axs = plt.subplots(2, 4, figsize=(17, 8.6))
+    x, y = np.meshgrid(np.linspace(-half - 0.5, half + 0.5, 401), np.linspace(-half - 0.5, half + 0.5, 401))
     for k, ((px, py), label) in enumerate(positions):
-        # Long range: cloud-in-cell shares on the 4 nearest centres, each smeared like the ions.
-        cic = CloudInCell(np.array([[px + 2.5, py + 2.5]]), 5, 5)
-        grid = np.zeros_like(x)
-        for index, weight in zip(cic.index[:, 0], cic.weight[:, 0]):
-            c, r = divmod(int(index), 5)
-            grid += weight * gaussian(x, y, c - 2, r - 2, EPS)
+        # Long range: cloud-in-cell shares on the 4 nearest centres, then smoothed.
+        grid = smooth_nodes(CloudInCell(np.array([[px + n // 2 + 0.5, py + n // 2 + 0.5]]), n, n)
+                            .deposit(np.ones(1)))
         ax = axs[0, k]
-        ax.imshow(grid, extent=EXTENT, cmap="viridis", vmin=0, vmax=top)
-        cell_lines(ax)
+        node_image(ax, grid, half, "viridis", 0.2)
         ax.plot(px, py, "r+", ms=14, mew=2)
         ax.set_title(f"Electron {label}")
         # Close range: a compact ball at the electron itself.
         ax = axs[1, k]
-        ax.imshow(gaussian(x, y, px, py, EPS_E), extent=EXTENT, cmap="viridis", vmin=0,
-                  vmax=gaussian(0, 0, 0, 0, EPS_E))
-        cell_lines(ax)
+        ax.imshow(compact_density(x, y, px, py, EPS_E), extent=(-half - 0.5, half + 0.5, half + 0.5, -half - 0.5),
+                  cmap="viridis", vmin=0, vmax=compact_density(0, 0, 0, 0, EPS_E))
+        cell_lines(ax, half)
         ax.plot(px, py, "r+", ms=14, mew=2)
-    axs[0, 0].set_ylabel(f"Long range (grid fields)\ncloud-in-cell, softening {EPS}", fontsize=11)
-    axs[1, 0].set_ylabel(f"Close range (within {S.electron_cutoff:g} cells)\nsoftening {EPS_E}",
+    axs[0, 0].set_ylabel(f"Long range (grid fields)\ncloud-in-cell + {S.smoothing_passes} smoothing passes",
                          fontsize=11)
-    fig.suptitle("One electron (-0.5 e); red +: its position. The colour scale of each row is "
-                 "fixed; the close-range ball is ~30x denser at its peak.", fontsize=12)
+    axs[1, 0].set_ylabel(f"Close range (within {S.electron_cutoff:g} cells)\nGaussian of width {EPS_E}",
+                         fontsize=11)
+    fig.suptitle("One electron (-0.5 e); red +: its position. Top: its share of the charge on each "
+                 "cell centre (colour scale up to 20%). Bottom: the compact ball, ~40x denser at its peak.",
+                 fontsize=12)
     fig.tight_layout()
     fig.savefig(OUT / "electron.png", dpi=80)
 
 
-def pair_force(separations, centre=12.5, n=24):
-    """Force between two electrons (charge -0.5 each) along x, through the grid only."""
-    kernel = GridKernel(n, n, EPS)
-    q = -S.cell_charge / S.carriers_per_cell
-    out = []
-    for d in separations:
-        a, b = (centre + d / 2, 12.5), (centre - d / 2, 12.5)
-        field = kernel.field(CloudInCell(np.array([b]), n, n).deposit(np.array([q])))
-        out.append(q * CloudInCell(np.array([a]), n, n).gather(field)[0, 0])
-    return np.array(out)
+def simulate(world, ticks):
+    """What App.step does: batteries, then electrons and fields."""
+    simulation = Simulation(world, world.settings)
+    for i in range(ticks):
+        simulation.step(world.settings.dt, i * world.settings.dt)
+    return simulation.maxwell
 
 
 def run_scene(cutoff, seed=0):
@@ -142,26 +154,22 @@ def run_scene(cutoff, seed=0):
     p = w.particles
     # Start every electron on its cell centre, the worst case, to show what the physics does.
     p.pos = np.floor(p.pos) + 0.5 + w.rng.uniform(-0.02, 0.02, p.pos.shape)
-    electric = ElectricField(s)
-    for i in range(1500):
-        battery.pump(w, electric.potential_grid(w, battery.probe_cells(w)), s.dt, s, i * s.dt)
-        physics.step(w, electric, s.dt, s)
+    simulate(w, 1500)
     return w
 
 
 def behaviour_figure():
     q2 = (S.cell_charge / S.carriers_per_cell) ** 2
-    seps = np.linspace(0, 2.5, 101)
-    grid = pair_force(seps)
-    close = q2 * _close_field(np.stack([seps, 0 * seps], -1), EPS_E, EPS, S.electron_cutoff)[:, 0]
+    r, f_grid = grid_force(S.smoothing_passes, 4.0)
+    close = point_correction(np.stack([r, 0 * r], -1), *PARAMS)[:, 1]
     fig = plt.figure(figsize=(16, 5.6))
     ax = fig.add_subplot(1, 3, 1)
-    ax.plot(seps, grid, label="grid fields only")
-    ax.plot(seps, grid + close, label="grid + close range (used)")
-    ax.plot(seps, q2 * softened_force(seps, EPS_E), ":", label=f"Coulomb, softening {EPS_E}")
+    ax.plot(r, q2 * f_grid, label="grid fields only")
+    ax.plot(r, q2 * (f_grid + close), label="grid + close range (used)")
+    ax.plot(r, q2 * compact_force(r), ":", label=f"compact line charges (width {EPS_E})")
     ax.set_xlabel("distance between the electrons (cells)")
     ax.set_ylabel("repulsion")
-    ax.set_ylim(0, 2.2)
+    ax.set_ylim(0, 1.5)
     ax.legend()
     ax.set_title("Force between two electrons")
 
@@ -169,10 +177,10 @@ def behaviour_figure():
                                          (S.electron_cutoff, "Close range on (default)"))):
         w = run_scene(cutoff)
         ax = fig.add_subplot(1, 3, k + 2)
-        for c, r in np.argwhere(w.materials.conductive):
-            ax.add_patch(Rectangle((c, r), 1, 1, fc="#e8a060", ec="#7a5030", lw=0.5))
-        for c, r in np.argwhere(w.materials.kind == Material.BATTERY):
-            ax.add_patch(Rectangle((c, r), 1, 1, fc="#556655", ec="k", lw=0.5))
+        for c, rr in np.argwhere(w.materials.conductive):
+            ax.add_patch(Rectangle((c, rr), 1, 1, fc="#e8a060", ec="#7a5030", lw=0.5))
+        for c, rr in np.argwhere(w.materials.kind == Material.BATTERY):
+            ax.add_patch(Rectangle((c, rr), 1, 1, fc="#556655", ec="k", lw=0.5))
         pos = w.particles.pos
         ax.scatter(pos[:, 0], pos[:, 1], s=8, c="#1f5fd0", zorder=3)
         ax.set_xlim(9, 17)
@@ -188,7 +196,7 @@ def behaviour_figure():
     fig.savefig(OUT / "electron_spacing.png", dpi=80)
 
 
-# The P3M walkthrough (docs/fields.md): 10 electrons in vacuum on a 16 x 16 grid.
+# The walkthrough (docs/fields.md): 10 electrons in vacuum on a 16 x 16 grid.
 N = 16
 Q = -S.cell_charge / S.carriers_per_cell
 # Electron 0 is the cloud-in-cell example; electrons 1 and 2 are a close pair.
@@ -208,44 +216,34 @@ def grid_axes(ax, n=N, lines=True):
             ax.axvline(v, color="0.75", lw=0.4)
 
 
-# Spectra span a wide range: a square-root colour scale shows the weak parts too.
-SQRT = matplotlib.colors.PowerNorm(0.5)
+def electrons(ax, numbers=True, size=60):
+    ax.scatter(EXAMPLE[:, 0], EXAMPLE[:, 1], s=size, c="#1f5fd0", ec="w", zorder=3)
+    if numbers:
+        for k, (px, py) in enumerate(EXAMPLE):
+            ax.text(px + 0.25, py - 0.25, str(k), fontsize=9, color="#1f5fd0")
 
 
-def spectrum(a):
-    """Magnitude of a full 2D spectrum, k = 0 in the middle."""
-    return np.abs(np.fft.fftshift(a))
+def charge_image(ax, fig, rho, title, label_values=True):
+    lim = np.abs(rho).max()
+    im = ax.imshow(rho.T, extent=GRID_EXTENT, cmap="RdBu_r", vmin=-lim, vmax=lim)
+    grid_axes(ax)
+    if label_values:
+        for (c, r), v in np.ndenumerate(rho):
+            if abs(v) >= 0.005:
+                ax.text(c + 0.5, r + 0.5, f"{v:.2f}".replace("-0.", "-."), ha="center", va="center",
+                        fontsize=7, color="w" if v < -0.6 * lim else "k")
+    fig.colorbar(im, ax=ax, label="charge on the node (e)", shrink=0.8)
+    ax.set_title(title)
 
 
-def p3m_split_figure():
-    r = np.linspace(0, 2.5, 501)
-    compact = softened_force(r, EPS_E)
-    smooth = softened_force(r, EPS)
-    close = _close_field(np.stack([r, 0 * r], -1), EPS_E, EPS, S.electron_cutoff)[:, 0]
-    fig, ax = plt.subplots(figsize=(8, 4.6))
-    ax.plot(r, compact, "k:", lw=2, label=f"wanted: compact electrons (softening {EPS_E})")
-    ax.plot(r, smooth, lw=2, label=f"PM, far part on the grid: erf (softening {EPS})")
-    ax.plot(r, close, lw=2, label="PP, near part pair by pair: erfc remainder")
-    ax.plot(r, smooth + close, "--", lw=1.5, label="PM + PP (used)")
-    ax.axvline(S.electron_cutoff, color="0.5", lw=1)
-    ax.text(S.electron_cutoff + 0.03, 6.5, "cutoff", color="0.4")
-    ax.set_xlabel("distance between two charges (cells)")
-    ax.set_ylabel("repulsion (unit charges)")
-    ax.set_ylim(-0.5, 7)
-    ax.legend()
-    ax.set_title("Splitting the Coulomb force into a far and a near part")
-    fig.tight_layout()
-    fig.savefig(OUT / "p3m_split.png", dpi=80)
-
-
-def p3m_assign_figure(cic, rho):
+def assign_figure(cic, rho):
     fig, axs = plt.subplots(1, 2, figsize=(13, 6.4))
     ax = axs[0]
     grid_axes(ax)
     centres = np.arange(N) + 0.5
     cx, cy = np.meshgrid(centres, centres)
     ax.plot(cx, cy, ".", color="0.6", ms=3)
-    ax.scatter(EXAMPLE[:, 0], EXAMPLE[:, 1], s=60, c="#1f5fd0", zorder=3)
+    electrons(ax)
     # Electron 0: its 4 nodes and weights.
     x0, y0 = EXAMPLE[0]
     for index, weight in zip(cic.index[:, 0], cic.weight[:, 0]):
@@ -255,182 +253,197 @@ def p3m_assign_figure(cic, rho):
         ax.text(c + 0.5 + (0.15 if right else -0.15), r + 0.5 + (0.45 if below else -0.2),
                 f"{weight:.2f}", ha="left" if right else "right", color="#d03030", fontsize=11,
                 weight="bold")
-    for k, (px, py) in enumerate(EXAMPLE):
-        ax.text(px + 0.25, py - 0.25, str(k), fontsize=9, color="#1f5fd0")
     ax.set_title("The scene: 10 electrons (blue, numbered), grid nodes at the cell centres\n"
                  "(grey). Red: electron 0 is shared over its 4 nearest nodes")
-    ax = axs[1]
-    lim = np.abs(rho).max()
-    im = ax.imshow(rho.T, extent=GRID_EXTENT, cmap="RdBu_r", vmin=-lim, vmax=lim)
-    grid_axes(ax)
-    for (c, r), v in np.ndenumerate(rho):
-        if abs(v) >= 0.005:
-            ax.text(c + 0.5, r + 0.5, f"{v:.2f}".replace("-0.", "-."), ha="center", va="center",
-                    fontsize=7, color="w" if v < -0.6 * lim else "k")
-    fig.colorbar(im, ax=ax, label="charge on the node (e)", shrink=0.8)
-    ax.set_title("Step 1. The charge grid ρ\n(each electron: -0.5 e, shared over 4 nodes)")
+    charge_image(axs[1], fig, rho, "Step 1. The charge grid ρ\n(each electron: -0.5 e, shared over 4 nodes)")
     for ax in axs:
         ax.set_xlabel("x (cells)")
         ax.set_ylabel("y (cells)")
     fig.tight_layout()
-    fig.savefig(OUT / "p3m_assign.png", dpi=100)
+    fig.savefig(OUT / "pic_assign.png", dpi=100)
 
 
-def p3m_kernel_figure(kernel_x, shape):
-    n = kernel_x.shape[0] // 2
-    fig, axs = plt.subplots(1, 3, figsize=(18, 5.4))
-    lim = np.abs(kernel_x).max()
-    im = axs[0].imshow(kernel_x.T, extent=(-n - 0.5, n + 0.5, n + 0.5, -n - 0.5), cmap="PuOr",
-                       vmin=-lim, vmax=lim)
-    fig.colorbar(im, ax=axs[0], shrink=0.85)
-    axs[0].set_title("The kernel Kx in real space: the x field of one\n"
-                     f"unit charge (softening {EPS}), with the correction")
-    axs[0].set_xlabel("x offset from the charge (cells)")
-    axs[0].set_ylabel("y offset (cells)")
-    # Along the x axis: the softened field itself, and the corrected kernel samples.
-    r = np.linspace(0, 6, 301)
-    offsets = np.arange(0, 7)
-    axs[1].plot(r, softened_force(r, EPS), color="0.4", label=f"softened field (erf, softening {EPS})")
-    axs[1].plot(offsets, kernel_x[n + offsets, n], "o-", color="#d06020",
-                label="Kx with the assignment correction")
-    axs[1].axhline(0, color="0.7", lw=0.8)
-    axs[1].set_xlabel("x offset from the charge (cells)")
-    axs[1].set_ylabel("field")
-    axs[1].legend()
-    axs[1].set_title("Along the x axis: the correction boosts the nearest\n"
-                     "nodes to make up for cloud-in-cell smearing")
-    im = axs[2].imshow(spectrum(np.fft.fft2(kernel_x, s=shape)).T, cmap="magma", norm=SQRT,
-                       extent=(-shape[0] / 2, shape[0] / 2, shape[1] / 2, -shape[1] / 2))
-    fig.colorbar(im, ax=axs[2], shrink=0.85)
-    axs[2].set_title("Its spectrum |K̂x|: the filter.\nZero at kx = 0, strongest at low k")
-    axs[2].set_xlabel("kx (cycles per padded grid)")
-    axs[2].set_ylabel("ky")
-    fig.tight_layout()
-    fig.savefig(OUT / "p3m_kernel.png", dpi=80)
-
-
-def p3m_pipeline_figure(rho, kernel_x, shape):
-    padded = np.zeros(shape)
-    padded[:N, :N] = rho
-    rho_hat = np.fft.fft2(padded)
-    product = rho_hat * np.fft.fft2(kernel_x, s=shape)
-    back = np.fft.ifft2(product).real
-    k_extent = (-shape[0] / 2, shape[0] / 2, shape[1] / 2, -shape[1] / 2)
-    fig, axs = plt.subplots(1, 4, figsize=(21, 5.6))
-    lim = np.abs(rho).max()
-    axs[0].imshow(padded.T, extent=(0, shape[0], shape[1], 0), cmap="RdBu_r", vmin=-lim, vmax=lim)
-    axs[0].add_patch(Rectangle((0, 0), N, N, fill=False, ec="k", lw=1.5, ls="--"))
-    axs[0].set_title(f"a. Before the FFT: ρ, zero-padded\nto {shape[0]} x {shape[1]} (dashed: the scene)")
-    im = axs[1].imshow(spectrum(rho_hat).T, extent=k_extent, cmap="magma", norm=SQRT)
-    fig.colorbar(im, ax=axs[1], shrink=0.75)
-    axs[1].set_title("b. After the FFT: |ρ̂|\n(centre, k = 0: total charge, -5 e)")
-    im = axs[2].imshow(spectrum(product).T, extent=k_extent, cmap="magma", norm=SQRT)
-    fig.colorbar(im, ax=axs[2], shrink=0.75)
-    axs[2].set_title("c. After the filter: |ρ̂ · K̂x|\n(column kx = 0 and high k suppressed)")
-    lim = np.abs(back).max()
-    im = axs[3].imshow(back.T, extent=(0, shape[0], shape[1], 0), cmap="PuOr", vmin=-lim, vmax=lim)
-    fig.colorbar(im, ax=axs[3], shrink=0.75)
-    axs[3].add_patch(Rectangle((N - 1, N - 1), N, N, fill=False, ec="k", lw=1.5, ls="--"))
-    axs[3].set_title("d. After the inverse FFT: Ex\n(dashed: the part kept, the scene's cells)")
-    for ax in (axs[0], axs[3]):
-        ax.set_xlabel("x (cells)")
-        ax.set_ylabel("y (cells)")
-    for ax in axs[1:3]:
-        ax.set_xlabel("kx (cycles per padded grid)")
-        ax.set_ylabel("ky")
-    fig.tight_layout()
-    fig.savefig(OUT / "p3m_pipeline.png", dpi=80)
-    return back[N - 1 : 2 * N - 1, N - 1 : 2 * N - 1]
-
-
-def p3m_field_figure(field):
+def smooth_figure(rho, smoothed):
     fig, axs = plt.subplots(1, 3, figsize=(19, 6))
-    lim = np.abs(field).max()
+    one = np.zeros((7, 7))
+    one[3, 3] = 1
+    weights = smooth_nodes(one)
+    axs[0].imshow(weights.T, extent=(-3.5, 3.5, 3.5, -3.5), cmap="inferno", vmin=0)
+    for (i, j), v in np.ndenumerate(weights):
+        if v > 0:
+            axs[0].text(i - 3, j - 3, f"{v * 256:.0f}", ha="center", va="center", fontsize=9,
+                        color="k" if v > 0.07 else "w")
+    axs[0].set_title(f"The filter: where {S.smoothing_passes} passes of 1-2-1 send the charge\n"
+                     "of one node (in 256ths): (1 4 6 4 1) / 16 per axis")
+    axs[0].set_xlabel("x offset (cells)")
+    axs[0].set_ylabel("y offset (cells)")
+    charge_image(axs[1], fig, rho, "Before: ρ from step 1", label_values=False)
+    electrons(axs[1], numbers=False, size=25)
+    charge_image(axs[2], fig, smoothed, "Step 2. After smoothing: every charge\nspread over about 2 cells",
+                 label_values=False)
+    electrons(axs[2], numbers=False, size=25)
+    for ax in axs[1:]:
+        ax.set_xlabel("x (cells)")
+        ax.set_ylabel("y (cells)")
+    fig.tight_layout()
+    fig.savefig(OUT / "pic_smooth.png", dpi=80)
+
+
+def yee_figure():
+    fig, ax = plt.subplots(figsize=(7.4, 6.6))
+    n = 3
+    for v in range(n + 1):
+        ax.plot([0, n], [v, v], color="0.6", lw=1)
+        ax.plot([v, v], [0, n], color="0.6", lw=1)
+    c = np.arange(n) + 0.5
+    e = np.arange(n + 1)
+    cx, cy = np.meshgrid(c, c)
+    ax.plot(cx.ravel(), cy.ravel(), "o", color="#1f5fd0", ms=11, label="nodes (cell centres): ρ, φ, J")
+    ex_x, ex_y = np.meshgrid(e, c)
+    ax.quiver(ex_x - 0.18, ex_y, 0.36, 0, color="#d06020", angles="xy", scale_units="xy", scale=1,
+              width=0.008, label="Ex: on vertical cell edges")
+    ey_x, ey_y = np.meshgrid(c, e)
+    ax.quiver(ey_x, ey_y - 0.18, 0, 0.36, color="#2a9a40", angles="xy", scale_units="xy", scale=1,
+              width=0.008, label="Ey: on horizontal cell edges")
+    bx, by = np.meshgrid(e, e)
+    ax.plot(bx.ravel(), by.ravel(), "s", color="#a02090", ms=9, mfc="w", mew=2, label="Bz: on cell corners")
+    ax.set_xlim(-0.4, n + 0.4)
+    ax.set_ylim(n + 0.4, -0.4)
+    ax.set_aspect("equal")
+    ax.set_xlabel("x (cells)")
+    ax.set_ylabel("y (cells)")
+    ax.legend(loc="upper center", bbox_to_anchor=(0.5, -0.1), ncol=2, fontsize=9)
+    ax.set_title("Step 3. The staggered (Yee) grid: each field where\nits differences are needed")
+    fig.tight_layout()
+    fig.savefig(OUT / "pic_yee.png", dpi=80)
+
+
+def poisson_figure(mx):
+    fig, axs = plt.subplots(1, 3, figsize=(19, 6))
+    m = mx.margin
+    full = (-m, N + m, N + m, -m)
+    lim = np.abs(mx.potential).max()
+    im = axs[0].imshow(mx.potential.T, extent=full, cmap="PuOr", vmin=-lim, vmax=lim)
+    axs[0].add_patch(Rectangle((0, 0), N, N, fill=False, ec="k", lw=1.5, ls="--"))
+    fig.colorbar(im, ax=axs[0], shrink=0.8)
+    axs[0].set_title("Step 4. The potential φ from a sine-transform\nPoisson solve, on the whole grid "
+                     "(dashed: the\nscene; φ = 0 just outside the absorbing margin)")
+    e, _ = mx.node_fields()
+    lim = np.abs(e).max()
     for k, name in enumerate(("Ex", "Ey")):
-        im = axs[k].imshow(field[..., k].T, extent=GRID_EXTENT, cmap="PuOr", vmin=-lim, vmax=lim)
-        grid_axes(axs[k])
-        axs[k].scatter(EXAMPLE[:, 0], EXAMPLE[:, 1], s=25, c="#1f5fd0", ec="w", zorder=3)
-        fig.colorbar(im, ax=axs[k], shrink=0.8)
-        axs[k].set_title(f"{name} on the grid nodes")
-    ax = axs[2]
-    grid_axes(ax)
-    centres = np.arange(N) + 0.5
-    strength = np.sqrt((field**2).sum(-1))
-    unit = field / strength[..., None]
-    cx, cy = np.meshgrid(centres, centres, indexing="ij")
-    ax.quiver(cx, cy, unit[..., 0], unit[..., 1], np.log10(strength), cmap="viridis",
-              angles="xy", scale_units="xy", scale=1.4, width=0.004)
-    ax.scatter(EXAMPLE[:, 0], EXAMPLE[:, 1], s=60, c="#1f5fd0", zorder=3)
-    ax.set_title("E as arrows (direction only; colour: log |E|).\nIt points at the (negative) electrons")
+        ax = axs[k + 1]
+        im = ax.imshow(e[..., k].T, extent=GRID_EXTENT, cmap="PuOr", vmin=-lim, vmax=lim)
+        grid_axes(ax)
+        electrons(ax, numbers=False, size=25)
+        fig.colorbar(im, ax=ax, shrink=0.8)
+        ax.set_title(f"{name} = -dφ/d{name[1]}, averaged to the nodes for display")
     for ax in axs:
         ax.set_xlabel("x (cells)")
         ax.set_ylabel("y (cells)")
-    fig.suptitle("Step 4. The field after both inverse FFTs, cropped to the scene", fontsize=13)
     fig.tight_layout()
-    fig.savefig(OUT / "p3m_field.png", dpi=80)
+    fig.savefig(OUT / "pic_poisson.png", dpi=80)
 
 
-def p3m_force_figure(pm, pp, exact):
+def split_figure():
+    r, f_grid = grid_force(S.smoothing_passes, 4.0)
+    close = point_correction(np.stack([r, 0 * r], -1), *PARAMS)[:, 1]
+    with np.errstate(divide="ignore"):
+        point = np.where(r > 0, 2 / r, np.nan)
+    fig, ax = plt.subplots(figsize=(8.4, 4.8))
+    ax.plot(r, point, color="0.7", lw=1, label="point line charges: 2 / r")
+    ax.plot(r, compact_force(r), "k:", lw=2, label=f"wanted: compact electrons (width {EPS_E})")
+    ax.plot(r, f_grid, lw=2, label="PM, far part: what the grid delivers (measured)")
+    ax.plot(r, close, lw=2, label="PP, near part: the difference, pair by pair")
+    ax.plot(r, f_grid + close, "--", lw=1.5, label="PM + PP (used)")
+    ax.axvline(S.electron_cutoff, color="0.5", lw=1)
+    ax.text(S.electron_cutoff + 0.03, 5.6, "cutoff", color="0.4")
+    ax.set_xlabel("distance between two charges (cells)")
+    ax.set_ylabel("repulsion (unit charges)")
+    ax.set_ylim(-0.3, 6)
+    ax.legend()
+    ax.set_title("Splitting the force into a far and a near part")
+    fig.tight_layout()
+    fig.savefig(OUT / "pic_split.png", dpi=80)
+
+
+def force_figure(pm, pp, exact):
     fig, axs = plt.subplots(1, 3, figsize=(19, 6.4))
     # Arrow length grows with the square root of the force: the close pair pushes
-    # 20x harder than the far field, which would otherwise hide everything else.
+    # far harder than the rest, which would otherwise hide everything else.
     for ax, force, colour, title in ((axs[0], pm, "#2a7ab0", "Step 5. PM force: E read back at each electron"),
                                      (axs[1], pp, "#d06020", f"Step 6. PP force: only pairs closer than {S.electron_cutoff:g} cells")):
         grid_axes(ax, lines=False)
         ax.grid(alpha=0.3)
-        ax.scatter(EXAMPLE[:, 0], EXAMPLE[:, 1], s=50, c="#1f5fd0", zorder=3)
-        for k, (px, py) in enumerate(EXAMPLE):
-            ax.text(px + 0.25, py - 0.25, str(k), fontsize=9, color="#1f5fd0")
+        electrons(ax, size=50)
         size = np.sqrt((force**2).sum(-1))
         shown = force / np.maximum(np.sqrt(size), 1e-12)[:, None]
         ax.quiver(EXAMPLE[:, 0], EXAMPLE[:, 1], shown[:, 0], shown[:, 1], color=colour,
-                  angles="xy", scale_units="xy", scale=0.25, width=0.006, zorder=4)
+                  angles="xy", scale_units="xy", scale=0.4, width=0.006, zorder=4)
         ax.set_title(title + "\n(arrow length ~ square root of the force)")
         ax.set_xlabel("x (cells)")
         ax.set_ylabel("y (cells)")
     ax = axs[2]
     index = np.arange(len(EXAMPLE))
     ax.bar(index - 0.2, np.sqrt((exact**2).sum(-1)), 0.4, color="#e03030", label="brute force")
-    ax.bar(index + 0.2, np.sqrt(((pm + pp) ** 2).sum(-1)), 0.4, color="k", label="P3M: PM + PP")
+    ax.bar(index + 0.2, np.sqrt(((pm + pp) ** 2).sum(-1)), 0.4, color="k", label="PM + PP")
     ax.set_yscale("log")
     ax.set_xticks(index)
     ax.set_xlabel("electron")
     ax.set_ylabel("|force|")
     ax.legend()
-    ax.set_title("Step 7. Total force on each electron,\nP3M against brute force")
+    ax.set_title("Step 7. Total force on each electron,\nPM + PP against brute force")
     fig.tight_layout()
-    fig.savefig(OUT / "p3m_forces.png", dpi=80)
+    fig.savefig(OUT / "pic_forces.png", dpi=80)
 
 
-def p3m_figures():
+def waves_figure():
+    """The antenna scene (F7) after a while: waves leaving, swallowed by the margin."""
+    loaded = next(sc for sc in scenes.SCENES if sc.build is scenes.antenna)
+    s = Settings(**loaded.settings)
+    w = World(40, 32, s, np.random.default_rng(0))
+    scenes.antenna(w)
+    mx = simulate(w, int(round(25 / s.dt)))
+    m = mx.margin
+    bz = mx.bz * s.speed_of_light**2
+    lim = np.percentile(np.abs(bz), 99.5)
+    fig, ax = plt.subplots(figsize=(9, 7.2))
+    im = ax.imshow(bz.T, extent=(-m - 0.5, 40 + m + 0.5, 32 + m + 0.5, -m - 0.5), cmap="RdBu", vmin=-lim, vmax=lim)
+    ax.add_patch(Rectangle((0, 0), 40, 32, fill=False, ec="k", lw=1.5, ls="--"))
+    for c, r in np.argwhere(w.materials.conductive | (w.materials.kind == Material.BATTERY)):
+        ax.add_patch(Rectangle((c, r), 1, 1, fc="#e8a060", ec="none"))
+    fig.colorbar(im, ax=ax, shrink=0.8, label="c² Bz")
+    ax.set_xlabel("x (cells)")
+    ax.set_ylabel("y (cells)")
+    ax.set_title("Antenna (F7) after 25 time units: waves of B spread at c = 2 cells per\n"
+                 "time unit and fade in the absorbing margin (outside the dashed scene)")
+    fig.tight_layout()
+    fig.savefig(OUT / "pic_waves.png", dpi=80)
+
+
+def walkthrough_figures():
     q = np.full(len(EXAMPLE), Q)
     cic = CloudInCell(EXAMPLE, N, N)
     rho = cic.deposit(q)
-    kernel = GridKernel(N, N, EPS)
-    # The same real-space kernel GridKernel transforms (offsets -(N-1) .. N-1).
-    kernel_x, kernel_y, _ = field_kernels(N, N, EPS)
-    p3m_split_figure()
-    p3m_assign_figure(cic, rho)
-    p3m_kernel_figure(kernel_x, kernel.shape)
-    ex = p3m_pipeline_figure(rho, kernel_x, kernel.shape)
-    field = kernel.field(rho)
-    assert np.allclose(ex, field[..., 0]), "the walkthrough must match GridKernel"
-    padded_y = np.fft.ifft2(np.fft.fft2(rho, s=kernel.shape) * np.fft.fft2(kernel_y, s=kernel.shape))
-    assert np.allclose(padded_y.real[N - 1 : 2 * N - 1, N - 1 : 2 * N - 1], field[..., 1])
-    p3m_field_figure(field)
-    pm = q[:, None] * cic.gather(field)
-    # PP, as in CloseRange.force: pairs within the cutoff from a k-d tree.
+    mx = Maxwell(N, N, S)
+    full = mx.smoothed(rho)
+    assign_figure(cic, rho)
+    smooth_figure(rho, mx.visible(full))
+    yee_figure()
+    mx.enforce_gauss(full)
+    poisson_figure(mx)
+    split_figure()
+    pm = q[:, None] * mx.gather(EXAMPLE)[:, :2]
+    # PP, as in CloseRange.force: pairs within the cutoff.
     pp = np.zeros_like(pm)
     for i, j in cKDTree(EXAMPLE).query_pairs(S.electron_cutoff, output_type="ndarray"):
-        pair = q[i] * q[j] * _close_field(EXAMPLE[i] - EXAMPLE[j], EPS_E, EPS, S.electron_cutoff)
+        pair = q[i] * q[j] * point_correction(EXAMPLE[i] - EXAMPLE[j], *PARAMS)[1:]
         pp[i] += pair
         pp[j] -= pair
-    exact = q[:, None] * np.stack([coulomb_field(EXAMPLE[k:k + 1], np.delete(EXAMPLE, k, 0),
-                                                 np.delete(q, k), EPS_E)[0]
-                                   for k in range(len(EXAMPLE))])
-    p3m_force_figure(pm, pp, exact)
+    d = EXAMPLE[:, None] - EXAMPLE[None]
+    exact = (q[:, None, None] * q[None, :, None] * compact_g((d**2).sum(-1), EPS_E)[..., None] * d).sum(1)
+    force_figure(pm, pp, exact)
     error = np.sqrt(((pm + pp - exact) ** 2).sum(-1)) / np.sqrt((exact**2).sum(-1))
-    print("P3M force error per electron vs brute force:", np.round(error, 3))
+    print("PM + PP force error per electron vs brute force:", np.round(error, 3))
 
 
 if __name__ == "__main__":
@@ -438,5 +451,6 @@ if __name__ == "__main__":
     ion_figure()
     electron_figure()
     behaviour_figure()
-    p3m_figures()
+    walkthrough_figures()
+    waves_figure()
     print(f"Wrote figures to {OUT}")

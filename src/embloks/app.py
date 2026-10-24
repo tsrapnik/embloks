@@ -7,11 +7,11 @@ import pygame
 
 from embloks import battery, physics, render, scenes, storage
 from embloks.config import Settings
-from embloks.fields import CloudInCell, ElectricField, MagneticField, poynting
+from embloks.fields import poynting
 from embloks.grid import Grid
 from embloks.layers import Layer, LayerPanel
-from embloks.maxwell import Maxwell
 from embloks.materials import Material, Orientation
+from embloks.simulation import Simulation
 from embloks.ui import Brush, Tool, line_cells
 from embloks.world import World
 
@@ -39,7 +39,6 @@ KEY_HELP = [
     ("Up  Down", "tool value: resistance / EMF / charge"),
     ("R", "rotate battery"),
     ("F", "battery frequency: DC or AC"),
-    ("M", "field mode: instant / dynamic (Maxwell: induction, waves)"),
     ("[  ]  wheel", "brush size"),
     ("E  B  S  P", "show E arrows / B colours / S arrows / particles"),
     ("L", "layers panel (top right): show, scale, opacity, log/linear"),
@@ -71,8 +70,6 @@ class App:
         self.sim_speed = self.settings.default_sim_speed
         self.layers = default_layers()
         self.layer_panel = LayerPanel(list(self.layers.values()), self.font, self.settings)
-        self.electric = ElectricField(self.settings)
-        self.magnetic = MagneticField(self.settings)
         self.brush = Brush(self.settings)
         self.material_layer = render.MaterialLayer()
         self.hovered_cell: tuple[int, int] | None = None
@@ -114,8 +111,8 @@ class App:
         self._display: dict[str, np.ndarray] = {}
         self._display_time = 0.0
         self._display_key = None
-        # Time-stepped fields in dynamic mode (None: instant fields).
-        self.maxwell = self.make_maxwell() if s.dynamic_fields else None
+        # The physics: fields, close-range forces and batteries.
+        self.simulation = Simulation(world, s)
 
     def change_density(self, factor: float) -> None:
         s = self.settings
@@ -231,8 +228,6 @@ class App:
         elif key in LAYER_KEYS:
             layer = self.layers[LAYER_KEYS[key]]
             layer.visible = not layer.visible
-        elif key == pygame.K_m:
-            self.toggle_dynamic_fields()
         elif key == pygame.K_f:
             brush.step_frequency()
         elif key == pygame.K_l:
@@ -297,41 +292,17 @@ class App:
             # Falling behind: drop the backlog instead of trying to catch up.
             self._accumulator = 0.0
 
-    def make_maxwell(self) -> Maxwell:
-        """Dynamic fields for the current world, starting from rest (only static E)."""
-        w, m = self.world, self.world.materials
-        maxwell = Maxwell(m.cols, m.rows, self.settings)
-        maxwell.enforce_gauss(maxwell.charge(w, CloudInCell(w.particles.pos, m.cols, m.rows)))
-        return maxwell
-
-    def toggle_dynamic_fields(self) -> None:
-        s = self.settings
-        s.dynamic_fields = not s.dynamic_fields
-        self.maxwell = self.make_maxwell() if s.dynamic_fields else None
-        self._display = {}
-        if s.dynamic_fields:
-            self.show_message(f"Dynamic fields: Maxwell's equations in 2D, light speed "
-                              f"{s.speed_of_light:g} cells per time unit")
-        else:
-            self.show_message("Instant fields: Coulomb and Biot-Savart, no induction or waves")
+    @property
+    def maxwell(self):
+        return self.simulation.maxwell
 
     def potential_grid(self, where: np.ndarray | None = None) -> np.ndarray:
-        """Electric potential at the cell centres in the current field mode.
-
-        Only exact on the cells in `where`, if given (see ElectricField.potential_grid).
-        """
-        if self.maxwell is None:
-            return self.electric.potential_grid(self.world, where)
-        potential = self.maxwell.visible_potential()
-        if self.electric.close_range.enabled:
-            potential = potential + self.electric.close_range.potential(self.world, where)
-        return potential
+        """Electric potential at the cell centres (see Simulation.potential)."""
+        return self.simulation.potential(where)
 
     def step(self, dt: float) -> None:
         s = self.settings
-        probes = battery.probe_cells(self.world)
-        battery.pump(self.world, self.potential_grid(probes), dt, s, self.sim_time)
-        physics.step(self.world, self.electric, dt, s, self.maxwell)
+        self.simulation.step(dt, self.sim_time)
         alpha = min(1.0, dt / s.current_smoothing_time)
         self.current += alpha * (physics.current_density(self.world) - self.current)
         self.sim_time += dt
@@ -341,17 +312,13 @@ class App:
         """E and B on the grid, averaged over display_smoothing_time of simulated time.
 
         The average advances with simulated time, so it holds still while paused.
-        It restarts from the instantaneous fields whenever charges are painted or the
-        field mode changes, so edits show up immediately even while paused.
+        It restarts from the instantaneous fields whenever charges are painted, so
+        edits show up immediately even while paused.
         """
-        if self.maxwell is not None:
-            e, b = self.maxwell.node_fields()
-        else:
-            e = self.electric.grid(self.world)
-            # B from the averaged current: instantaneous electron jitter would flicker.
-            b = self.magnetic.grid(self.world, self.current + battery.current_grid(self.world))
+        self.simulation.sync()
+        e, b = self.maxwell.node_fields()
         w = self.world
-        key = (id(w), w.materials.version, w.fixed_version, self.maxwell is None)
+        key = (id(w), w.materials.version, w.fixed_version)
         tau = self.settings.display_smoothing_time
         if not self._display or key != self._display_key or tau <= 0:
             self._display = {"E": e, "B": b}
@@ -362,9 +329,6 @@ class App:
         self._display_key = key
         self._display_time = self.sim_time
         return self._display["E"], self._display["B"]
-
-    def display_e_field(self) -> np.ndarray:
-        return self.display_fields()[0]
 
     def render(self) -> None:
         s, layers = self.settings, self.layers
@@ -439,8 +403,7 @@ class App:
             ("Tool", tool),
             ("Brush", f"radius {b.radius}"),
             ("Speed", f"{self.sim_speed:g}× (simulated time per second)" + ("  ·  PAUSED" if self.paused else "")),
-            ("Fields", f"dynamic: Maxwell, light speed {self.settings.speed_of_light:g}"
-             if self.maxwell is not None else "instant: Coulomb + Biot-Savart"),
+            ("Light", f"{self.settings.speed_of_light:g} cells per time unit"),
             (
                 "World",
                 f"{plural(len(w.particles), 'electron')}"

@@ -27,8 +27,6 @@ class Scene:
     # Layer id -> attributes to set after resetting all layers to defaults.
     layers: dict[str, dict]
     sim_speed: float = 8
-    # Needs dynamic fields (Maxwell: induction, waves) rather than instant ones.
-    dynamic: bool = False
     # Physics settings that differ from the defaults for this scene.
     settings: dict = field(default_factory=dict)
 
@@ -139,7 +137,8 @@ SCENES = [
         "Battery and resistor",
         "energy (green S arrows) flows from the battery through space into the resistor",
         40, battery_and_resistor,
-        {"E": {"visible": False}, "S": {"visible": True}},
+        # Linear S: on a log scale the weak flow outside the loop looks as strong as inside.
+        {"E": {"visible": False}, "S": {"visible": True, "log_scale": False}},
     ),
     Scene(
         "Screening",
@@ -169,14 +168,11 @@ SCENES = [
     Scene(
         "Transformer",
         "the inner loop has no source: the outer loop's changing magnetic flux drives the "
-        "current through its resistor (press M for instant fields: it stops)",
+        "current through its resistor",
         40, transformer,
         {"E": {"visible": False}},
-        # A faster light speed shrinks the loops' inductance (L ~ 1/c^2 in 2D), so a real
-        # current flows round them; one AC period then takes about 3 seconds at 16x.
+        # One AC period takes about 3 seconds at 16x.
         sim_speed=16,
-        dynamic=True,
-        settings={"speed_of_light": 8.0},
     ),
     Scene(
         "Antenna",
@@ -184,7 +180,8 @@ SCENES = [
         "picks them up (hover its middle: Wire I)",
         40, antenna,
         {"S": {"visible": True}, "E": {"visible": False}},
-        dynamic=True,
+        # Slow light, so the waves are short (20 cells) and easy to watch.
+        settings={"speed_of_light": 2.0},
     ),
 ]
 
@@ -195,7 +192,6 @@ def load_scene(app, scene: Scene) -> None:
     for name in PHYSICS_SETTINGS:
         setattr(app.settings, name, getattr(defaults, name))
     app.settings.grid_density = scene.density
-    app.settings.dynamic_fields = scene.dynamic
     for name, value in scene.settings.items():
         setattr(app.settings, name, value)
     app.reset_scene()

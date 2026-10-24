@@ -1,8 +1,8 @@
-"""Dynamic fields: Maxwell's equations stepped in time on a staggered grid (FDTD).
+"""The fields: Maxwell's equations stepped in time on a staggered grid (FDTD).
 
 This is genuine 2D electromagnetism (TE mode: Ex, Ey in the plane, Bz out of it),
 as in particle-in-cell plasma codes. Charges are infinitely long lines in z, so
-static fields fall off as 1/r instead of 1/r^2 as in the instant-field mode.
+static fields fall off as 1/r instead of 1/r^2.
 
     dBz/dt = -(dEy/dx - dEx/dy)
     dE/dt  = c^2 curl(Bz) - J / eps0          (eps0 = 1 / (4 pi k))
@@ -32,6 +32,8 @@ class Maxwell:
         self.cols, self.rows = cols, rows
         self.settings = settings
         self.margin = m = settings.absorbing_margin
+        if m < settings.smoothing_passes:
+            raise ValueError("absorbing_margin must be at least smoothing_passes")
         self.nx, self.ny = nx, ny = cols + 2 * m, rows + 2 * m
         self.ex = np.zeros((nx + 1, ny))
         self.ey = np.zeros((nx, ny + 1))
@@ -41,8 +43,17 @@ class Maxwell:
         # the type-I sine transform: Poisson's equation is solved exactly in one go.
         kx = 2 * np.cos(np.pi * np.arange(1, nx + 1) / (nx + 1)) - 2
         ky = 2 * np.cos(np.pi * np.arange(1, ny + 1) / (ny + 1)) - 2
-        self._laplacian = kx[:, None] + ky[None, :]
+        self._inv_laplacian = 1 / (kx[:, None] + ky[None, :])
+        self._curl = np.zeros((nx + 1, ny + 1))
         self._damping_key = None
+
+    @classmethod
+    def for_world(cls, world, settings: Settings) -> "Maxwell":
+        """Fields for `world`, starting from rest: only the static E of its charges."""
+        m = world.materials
+        maxwell = cls(m.cols, m.rows, settings)
+        maxwell.enforce_gauss(maxwell.sources(world)[0])
+        return maxwell
 
     # --- Geometry -------------------------------------------------------------------
 
@@ -50,12 +61,6 @@ class Maxwell:
         """The part of a node array (nx, ny, ...) covering the visible grid."""
         m = self.margin
         return array[m : m + self.cols, m : m + self.rows]
-
-    def embed(self, array: np.ndarray) -> np.ndarray:
-        """A visible-grid node array placed inside a zero node array (nx, ny, ...)."""
-        out = np.zeros((self.nx, self.ny) + array.shape[2:])
-        self.visible(out)[...] = array
-        return out
 
     def _damping(self, dt: float):
         """Per-step damping factors for Ex, Ey, Bz: 1 inside, falling in the margin."""
@@ -88,85 +93,115 @@ class Maxwell:
 
     def _poisson(self, rhs: np.ndarray) -> np.ndarray:
         """phi with (discrete) laplacian(phi) = rhs and phi = 0 just outside the grid."""
-        return fft.idstn(fft.dstn(rhs, type=1) / self._laplacian, type=1)
+        return fft.idstn(fft.dstn(rhs, type=1) * self._inv_laplacian, type=1)
 
     def divergence(self) -> np.ndarray:
         return (self.ex[1:] - self.ex[:-1]) + (self.ey[:, 1:] - self.ey[:, :-1])
 
     def _gradient_subtract(self, phi: np.ndarray) -> None:
         """E -= grad(phi), with phi = 0 outside the grid."""
-        padded = np.pad(phi, 1)
-        self.ex -= padded[1:, 1:-1] - padded[:-1, 1:-1]
-        self.ey -= padded[1:-1, 1:] - padded[1:-1, :-1]
+        self.ex[1:-1] -= phi[1:] - phi[:-1]
+        self.ex[0] -= phi[0]
+        self.ex[-1] += phi[-1]
+        self.ey[:, 1:-1] -= phi[:, 1:] - phi[:, :-1]
+        self.ey[:, 0] -= phi[:, 0]
+        self.ey[:, -1] += phi[:, -1]
 
     def enforce_gauss(self, rho: np.ndarray) -> None:
         """Correct E so div E = rho / eps0 exactly, keeping its wave (curl) part.
 
         Also stores the electric potential of rho (Coulomb gauge), which the
-        batteries measure.
+        batteries measure. Poisson's equation is linear, so the correction
+        poisson(div E - 4 pi k rho) is poisson(div E) plus that potential.
         """
-        four_pi_k = 4 * np.pi * self.settings.coulomb_k
-        self._gradient_subtract(self._poisson(self.divergence() - four_pi_k * rho))
-        self.potential = self._poisson(-four_pi_k * rho)
+        self.potential = self._poisson(-4 * np.pi * self.settings.coulomb_k * rho)
+        self._gradient_subtract(self._poisson(self.divergence()) + self.potential)
 
     def _curl_e(self) -> np.ndarray:
-        """dEy/dx - dEx/dy at the corners."""
-        ey = np.pad(self.ey, ((1, 1), (0, 0)))
-        ex = np.pad(self.ex, ((0, 0), (1, 1)))
-        return (ey[1:] - ey[:-1]) - (ex[:, 1:] - ex[:, :-1])
+        """dEy/dx - dEx/dy at the corners (E is zero beyond the grid). Reuses a buffer."""
+        curl = self._curl
+        curl[:-1] = self.ey
+        curl[-1] = 0.0
+        curl[1:] -= self.ey
+        curl[:, :-1] -= self.ex
+        curl[:, 1:] += self.ex
+        return curl
 
     def step(self, rho: np.ndarray, current: np.ndarray, dt: float) -> None:
         """Advance E and B by dt. `rho` (nx, ny) and `current` (nx, ny, 2) live on nodes.
 
         The scheme is stable while light crosses under 1/sqrt(2) cell per step (CFL), so
-        a fast speed of light gets split into smaller steps.
+        a fast speed of light gets split into smaller steps. Gauss's law is enforced
+        once, at the end: the correction is a gradient, which has no curl, so it
+        doesn't change B or the waves in between.
         """
-        courant = self.settings.speed_of_light * dt * np.sqrt(2)
-        substeps = max(1, int(np.ceil(courant / 0.9)))
-        for _ in range(substeps):
-            self._step(rho, current, dt / substeps)
-
-    def _step(self, rho: np.ndarray, current: np.ndarray, dt: float) -> None:
-        c2 = self.settings.speed_of_light**2
-        four_pi_k = 4 * np.pi * self.settings.coulomb_k
+        s = self.settings
+        substeps = max(1, int(np.ceil(s.speed_of_light * dt * np.sqrt(2) / 0.9)))
+        h = dt / substeps
+        c2 = s.speed_of_light**2
+        four_pi_k = 4 * np.pi * s.coulomb_k
         # Currents from nodes onto the edges where E lives (boundary edges get none).
         jx = np.zeros_like(self.ex)
         jx[1:-1] = 0.5 * (current[:-1, :, 0] + current[1:, :, 0])
         jy = np.zeros_like(self.ey)
         jy[:, 1:-1] = 0.5 * (current[:, :-1, 1] + current[:, 1:, 1])
-        # Leapfrog: half a step of B, a full step of E, another half step of B.
-        self.bz -= 0.5 * dt * self._curl_e()
-        self.ex += dt * (c2 * (self.bz[:, 1:] - self.bz[:, :-1]) - four_pi_k * jx)
-        self.ey += dt * (-c2 * (self.bz[1:] - self.bz[:-1]) - four_pi_k * jy)
-        self.bz -= 0.5 * dt * self._curl_e()
-        damp_ex, damp_ey, damp_bz = self._damping(dt)
-        self.ex *= damp_ex
-        self.ey *= damp_ey
-        self.bz *= damp_bz
+        jx *= four_pi_k * h
+        jy *= four_pi_k * h
+        damp_ex, damp_ey, damp_bz = self._damping(h)
+        for _ in range(substeps):
+            # Leapfrog: half a step of B, a full step of E, another half step of B.
+            self.bz -= 0.5 * h * self._curl_e()
+            self.ex += h * c2 * (self.bz[:, 1:] - self.bz[:, :-1]) - jx
+            self.ey -= h * c2 * (self.bz[1:] - self.bz[:-1]) + jy
+            self.bz -= 0.5 * h * self._curl_e()
+            self.ex *= damp_ex
+            self.ey *= damp_ey
+            self.bz *= damp_bz
         self.enforce_gauss(rho)
 
     # --- Coupling to the world ------------------------------------------------------
 
-    def charge(self, world, cic: CloudInCell) -> np.ndarray:
-        """All charge (ions, test charges, electrons) on the full node grid."""
+    def smoothed(self, values: np.ndarray) -> np.ndarray:
+        """Visible-grid node values (cols, rows, ...) smoothed and placed on the full grid.
+
+        Smoothing runs on the visible grid plus a border as wide as it spreads,
+        which gives the same result as smoothing the whole (otherwise zero) grid.
+        """
+        k = self.settings.smoothing_passes
+        values = np.pad(values, [(k, k), (k, k)] + [(0, 0)] * (values.ndim - 2))
+        for _ in range(k):
+            values = _smooth(values)
+        out = np.zeros((self.nx, self.ny) + values.shape[2:])
+        m = self.margin - k
+        out[m : m + values.shape[0], m : m + values.shape[1]] = values
+        return out
+
+    def sources(self, world, battery_current: np.ndarray | None = None) -> tuple[np.ndarray, np.ndarray]:
+        """Smoothed charge (nx, ny) and current (nx, ny, 2) of the world on the full grid.
+
+        All charge counts: ions, test charges and electrons; the current is the
+        electrons' q*v plus the batteries' internal currents.
+        """
         s, m, p = self.settings, world.materials, world.particles
-        rho = ion_charge(m, s.cell_charge) + cic.deposit(p.charge)
+        cic = CloudInCell(p.pos, m.cols, m.rows)
+        values = np.zeros((m.cols, m.rows, 3))
+        values[..., 0] = ion_charge(m, s.cell_charge) + cic.deposit(p.charge)
         if len(world.fixed_charge):
-            rho = rho + CloudInCell(world.fixed_pos, m.cols, m.rows).deposit(world.fixed_charge)
-        return self.embed(rho)
+            values[..., 0] += CloudInCell(world.fixed_pos, m.cols, m.rows).deposit(world.fixed_charge)
+        values[..., 1:] = cic.deposit(p.charge[:, None] * p.vel)
+        if battery_current is not None:
+            values[..., 1:] += battery_current
+        full = self.smoothed(values)
+        return full[..., 0], full[..., 1:]
+
+    def static_potential(self, rho: np.ndarray) -> np.ndarray:
+        """Potential (cols, rows) of visible-grid node charges `rho`, smoothed like all
+        charge, on its own: the fields themselves are left alone."""
+        return self.visible(self._poisson(-4 * np.pi * self.settings.coulomb_k * self.smoothed(rho)))
 
     def advance(self, world, dt: float, battery_current: np.ndarray) -> None:
         """One tick: deposit charge and current from the world, then step the fields."""
-        m, p = world.materials, world.particles
-        cic = CloudInCell(p.pos, m.cols, m.rows)
-        current = np.stack(
-            [cic.deposit(p.charge * p.vel[:, 0]), cic.deposit(p.charge * p.vel[:, 1])], axis=-1
-        )
-        rho = self.charge(world, cic)
-        current = self.embed(current + battery_current)
-        for _ in range(self.settings.dynamic_smoothing_passes):
-            rho, current = _smooth(rho), _smooth(current)
-        self.step(rho, current, dt)
+        self.step(*self.sources(world, battery_current), dt)
 
     def gather(self, positions: np.ndarray) -> np.ndarray:
         """Ex, Ey, Bz at particle positions (in visible-grid cell coordinates), (N, 3).
@@ -211,15 +246,16 @@ def _bilinear(array: np.ndarray, gx: np.ndarray, gy: np.ndarray) -> np.ndarray:
 
 
 def _smooth(array: np.ndarray) -> np.ndarray:
-    """One pass of the 1-2-1 binomial filter along x and y (charge is conserved).
+    """One pass of the 1-2-1 binomial filter along x and y, zero beyond the edges.
 
-    Smears charge and current over neighbouring cells, like the softening length of
-    the instant-field mode: without it, single electrons in a one-cell-wide wire
-    make the field vary wildly within the cell.
+    Smears charge and current over neighbouring cells, the grid's counterpart of a
+    softening length: without it, single electrons in a one-cell-wide wire make the
+    field vary wildly within the cell. Conserves charge that stays clear of the edges.
     """
     for axis in (0, 1):
-        n = array.shape[axis]
-        padded = np.pad(array, [(1, 1) if a == axis else (0, 0) for a in range(array.ndim)])
-        left, middle, right = (np.take(padded, np.arange(k, k + n), axis=axis) for k in (0, 1, 2))
-        array = 0.25 * left + 0.5 * middle + 0.25 * right
+        a = np.moveaxis(array, axis, 0)
+        out = 0.5 * a
+        out[1:] += 0.25 * a[:-1]
+        out[:-1] += 0.25 * a[1:]
+        array = np.moveaxis(out, 0, axis)
     return array

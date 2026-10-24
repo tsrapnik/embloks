@@ -29,12 +29,10 @@ PHYSICS_SETTINGS = (
     "max_substeps",
     "coulomb_k",
     "speed_of_light",
-    "conductor_softening",
-    "test_charge_softening",
     "electron_softening",
     "electron_cutoff",
     "battery_flow_time",
-    "dynamic_fields",
+    "smoothing_passes",
     "absorbing_margin",
     "absorbing_strength",
 )

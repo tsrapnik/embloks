@@ -2,7 +2,7 @@ import numpy as np
 import pygame
 import pytest
 
-from embloks import battery, physics
+from embloks import physics
 from embloks.app import App
 from embloks.config import Settings
 from embloks.fields import poynting
@@ -59,12 +59,13 @@ def test_textbook_circuit_sends_energy_into_the_resistor(app):
     for i in range(int(20 / app.settings.dt)):
         app.step(app.settings.dt)
         if i % 3 == 0:
-            b = app.magnetic.grid(app.world, app.current + battery.current_grid(app.world))
-            flow += poynting(app.electric.grid(app.world), b, app.settings)
+            flow += poynting(*app.maxwell.node_fields(), app.settings)
         current.append(physics.current_density(app.world)[13:27, 7, 0].mean())
-    # Time-averaged S points into the resistor from outside and from inside the loop.
-    assert (flow[col + 1, rows, 0] < 0).all()
+    # Time-averaged S points into the resistor from inside the loop. In 2D a loop is a
+    # solenoid: B, and with it S, is nearly zero outside it.
     assert (flow[col - 1, rows, 0] > 0).all()
+    # (Beyond the smoothing width of the current, ~2 cells.)
+    assert np.abs(flow[col + 3, rows, 0]).sum() < 0.1 * flow[col - 1, rows, 0].sum()
     # Current around the loop follows Ohm's law (thin wires cut corners: allow 25%).
     wire = m.resistance[(m.kind == Material.CONDUCTOR) & ~resistor].sum()
     total = wire + m.resistance[resistor].sum() + app.settings.battery_resistance
@@ -86,7 +87,7 @@ def test_series_scene_drives_three_times_the_current(app):
 
 
 def test_magnetic_field_next_to_the_battery_is_steady(app):
-    """Regression for the jitter next to the battery (was ~0.6, now ~0.16)."""
+    """Regression for the jitter next to the battery: the displayed B holds steady."""
     app.load_scene(0)
     app.world.rng = np.random.default_rng(0)
     run(app, 40)
@@ -94,8 +95,7 @@ def test_magnetic_field_next_to_the_battery_is_steady(app):
     for i in range(int(20 / app.settings.dt)):
         app.step(app.settings.dt)
         if i % 4 == 0:  # One displayed frame at 8x speed.
-            b = app.magnetic.grid(app.world, app.current + battery.current_grid(app.world))
-            samples.append(b[11:13, 13:18].ravel())
+            samples.append(app.display_fields()[1][11:13, 13:18].ravel())
     samples = np.array(samples)
     flicker = samples.std(axis=0).mean() / np.abs(samples.mean(axis=0)).mean()
     assert flicker < 0.3
@@ -105,12 +105,12 @@ def test_capacitor_plates_reach_the_emf_with_a_uniform_field_between(app):
     app.load_scene(3)
     app.world.rng = np.random.default_rng(0)
     run(app, 60)
-    potential = app.electric.potential_grid(app.world)
+    potential = app.potential_grid()
     left_plate, right_plate = potential[16, 10:22].mean(), potential[22, 10:22].mean()
     [stack] = app.world.stacks
     assert right_plate - left_plate == pytest.approx(abs(stack.emf), rel=0.1)
     # Interior of the gap: away from the plates (charges are smeared ~1 cell) and edges.
-    gap = app.electric.grid(app.world)[18:21, 12:20]
+    gap = app.maxwell.node_fields()[0][18:21, 12:20]
     assert (gap[..., 0] < 0).all()  # From the + plate (right) to the - plate (left).
     strength = np.hypot(gap[..., 0], gap[..., 1])
     assert strength.std() / strength.mean() < 0.1  # Nearly uniform.
@@ -160,43 +160,47 @@ def test_transformer_drives_the_inner_loop_by_induction_only(app):
         "load": lambda j: j[27, 13:19, 1].mean(),  # Through the inner loop's resistor.
     }
     results = {}
-    for dynamic in (True, False):
+    for light in (8.0, 40.0):
         app.load_scene(5)
+        # Mutual inductance falls as 1/c^2: 25x weaker at c = 40. Electric coupling
+        # (the loops' charges) stays the same, so a load current that drops with it
+        # is induced.
+        app.settings.speed_of_light = light
+        app.reset_scene()
+        SCENES[5].build(app.world)
         app.world.rng = np.random.default_rng(0)
-        if not dynamic:
-            app.toggle_dynamic_fields()
         run(app, 60)
         t, data = record(app, 100, probes)
-        results[dynamic] = {name: sine_fit(t, x, 0.02) for name, x in data.items()}
-    load_dynamic, load_instant = results[True]["load"][0], results[False]["load"][0]
-    assert load_dynamic > 5 * load_instant  # No induction, no current through the load.
+        fits = {name: sine_fit(t, x, 0.02) for name, x in data.items()}
+        results[light] = fits | {"ratio": fits["load"][0] / fits["primary"][0]}
+    assert results[8.0]["ratio"] > 5 * results[40.0]["ratio"]
     # Faraday + Lenz with a resistive load: I_load ~ -dI_primary/dt, i.e. 90 degrees behind.
-    lag = (results[True]["load"][1] - results[True]["primary"][1] + 180) % 360 - 180
+    lag = (results[8.0]["load"][1] - results[8.0]["primary"][1] + 180) % 360 - 180
     assert lag == pytest.approx(-90, abs=40)
 
 
 def test_antenna_radiates_waves_that_the_receiver_picks_up(app):
     frequency, columns = 0.1, list(range(12, 27, 2))
     results = {}
-    for dynamic in (True, False):
+    for driven in (True, False):
         app.load_scene(6)
         app.world.rng = np.random.default_rng(0)
-        if not dynamic:
-            app.toggle_dynamic_fields()
+        if not driven:
+            # Replace the transmitter's source with wire: nothing radiates.
+            app.world.paint(np.array([9]), np.array([16]), Material.CONDUCTOR, resistance=0.1)
         run(app, 30)
         t, fields, receiver = [], {x: [] for x in columns}, []
         for _ in range(int(30 / app.settings.dt)):
             app.step(app.settings.dt)
             t.append(app.sim_time)
-            e = app.display_fields()[0] if dynamic else app.electric.grid(app.world)
+            e = app.display_fields()[0]
             for x in columns:
                 fields[x].append(e[x, 16, 1])
             receiver.append(physics.current_density(app.world)[29, 15:18, 1].mean())
         t = np.array(t)
         phases = np.unwrap(np.radians([sine_fit(t, np.array(fields[x]), frequency)[1] for x in columns]))
-        results[dynamic] = (np.polyfit(columns, phases, 1)[0], sine_fit(t, np.array(receiver), frequency)[0])
+        results[driven] = (np.polyfit(columns, phases, 1)[0], sine_fit(t, np.array(receiver), frequency)[0])
     wave = 2 * np.pi * frequency / app.settings.speed_of_light
-    # A travelling wave's phase falls with distance; an instant field's does not.
+    # A travelling wave's phase falls with distance at the speed of light.
     assert results[True][0] == pytest.approx(-wave, rel=0.35)
-    assert abs(results[False][0]) < 0.05
-    assert results[True][1] > 3 * results[False][1]
+    assert results[True][1] > 5 * results[False][1]

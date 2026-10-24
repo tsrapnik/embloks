@@ -3,9 +3,9 @@ import pytest
 
 from embloks import battery, physics
 from embloks.config import Settings
-from embloks.fields import ElectricField
 from embloks.materials import Material, Materials, Orientation
 from embloks.world import World
+from sim import Sim
 
 
 def paint_battery(m, cells, orientation, emf=1.0):
@@ -55,16 +55,11 @@ def rectangle(c0, c1, r0, r1):
 
 
 def simulate(world, seconds):
-    s = world.settings
-    electric = ElectricField(s)
-    for _ in range(int(round(seconds / s.dt))):
-        battery.pump(world, electric.potential_grid(world), s.dt, s)
-        physics.step(world, electric, s.dt, s)
-    return electric
+    return Sim(world).run(seconds)
 
 
-def terminal_voltage(world, electric, stack):
-    potential = electric.potential_grid(world)
+def terminal_voltage(world, sim, stack):
+    potential = sim.potential()
     high = battery.terminal_potential(world, potential, stack.high)
     low = battery.terminal_potential(world, potential, stack.low)
     return high - low
@@ -75,13 +70,15 @@ def test_open_circuit_terminal_voltage_reaches_emf():
     w.paint(np.arange(8, 20), np.full(12, 10), Material.CONDUCTOR, resistance=0.5)
     w.paint(np.arange(21, 33), np.full(12, 10), Material.CONDUCTOR, resistance=0.5)
     w.paint(np.array([20]), np.array([10]), Material.BATTERY, emf=3, orientation=Orientation.RIGHT)
-    electric = simulate(w, 10)
+    sim = Sim(w).run(10)
     [stack] = w.stacks
     voltages = []
-    for _ in range(5):  # Average a few samples: single electrons make it jitter.
-        electric = simulate(w, 1)
-        voltages.append(terminal_voltage(w, electric, stack))
-    assert np.mean(voltages) == pytest.approx(3, rel=0.15)
+    # Average every tick: in 2D each electron the battery moves is a line charge that
+    # shifts the terminal voltage by ~2, so the voltage dithers around the EMF.
+    for _ in range(int(5 / w.settings.dt)):
+        sim.step()
+        voltages.append(terminal_voltage(w, sim, stack))
+    assert np.mean(voltages) == pytest.approx(3, rel=0.05)
     # The + wire lost electrons to the - wire.
     c, _ = w.particles.cells()
     assert np.count_nonzero(c > 20) < np.count_nonzero(c < 20)
@@ -98,11 +95,11 @@ def test_loop_current_follows_ohms_law_and_polarity(orientation, sign):
     wire_cells = len(loop) - 1
     expected = 2 / (wire_cells * resistance + s.battery_resistance)
 
-    simulate(w, 30)
+    sim = Sim(w).run(30)
     top = (np.arange(6, 22), np.full(16, 3))
     samples = []
     for _ in range(20):
-        simulate(w, 0.5)
+        sim.run(0.5)
         samples.append(physics.current_density(w)[top][:, 0].mean())
     # Battery + on the right of the bottom edge pushes conventional current out of its
     # right terminal, up the right side and leftwards (-x) along the top.
@@ -128,11 +125,11 @@ def test_ohms_law_does_not_depend_on_charge_to_mass(charge_to_mass):
     w.paint(loop[:, 0], loop[:, 1], Material.CONDUCTOR, resistance=0.5)
     w.paint(np.array([14]), np.array([12]), Material.BATTERY, emf=2, orientation=Orientation.RIGHT)
     expected = 2 / ((len(loop) - 1) * 0.5 + s.battery_resistance)
-    simulate(w, 30)
+    sim = Sim(w).run(30)
     top = (np.arange(6, 22), np.full(16, 3))
     samples = []
     for _ in range(20):
-        simulate(w, 0.5)
+        sim.run(0.5)
         samples.append(physics.current_density(w)[top][:, 0].mean())
     assert -np.mean(samples) == pytest.approx(expected, rel=0.25)
 
@@ -170,3 +167,17 @@ def test_ac_stack_follows_a_sine_and_dc_stays_constant():
     assert ac.is_ac and ac.emf == -2
     assert ac.emf_at(1.0) == pytest.approx(-2)  # sin(2 pi * 0.25 * 1) = 1.
     assert ac.emf_at(2.0) == pytest.approx(0, abs=1e-12)
+
+
+def test_parallel_batteries_do_not_swing_between_their_terminals():
+    """Regression: with an explicit pump, two stacks feeding the same terminals overshot
+    by more every tick, until electrons flew around at speeds of ~100."""
+    from embloks import scenes
+
+    w = World(40, 32, Settings(), rng=np.random.default_rng(0))
+    scenes.parallel_paths(w)
+    sim = Sim(w)
+    stiffness = sim.stiffness()
+    assert len(stiffness) == 2 and all(value > 0 for value in stiffness.values())
+    sim.run(5)
+    assert np.hypot(*w.particles.vel.T).max() < 2

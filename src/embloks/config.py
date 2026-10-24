@@ -83,40 +83,33 @@ class Settings:
     max_step: float = 0.4
     max_substeps: int = 16
 
-    # Dynamic fields (M key): Maxwell's equations stepped in time instead of instant fields.
-    dynamic_fields: bool = False
-    # Width (cells) of the absorbing layer around the visible grid in dynamic mode, and
-    # how strongly it damps (per time unit, at its outer edge; it ramps up gradually).
-    absorbing_margin: int = 16
-    # Passes of a 1-2-1 smoothing filter applied to charge and current in dynamic mode:
-    # its counterpart of the softening length. Two passes (~1 cell) make a DC circuit
-    # carry the same current as in instant mode; fewer starve thin wires.
-    dynamic_smoothing_passes: int = 2
-    absorbing_strength: float = 3.0
-
-    # Coulomb constant 1/(4 pi eps0).
+    # Fields: Maxwell's equations in 2D, stepped in time (see maxwell.py).
+    # Coulomb constant 1/(4 pi eps0). In 2D a charge is a line charge: div E = 4 pi k rho
+    # gives a field 2 k q / r.
     coulomb_k: float = 1.0
     # Speed of light (cells per time unit); mu0 / 4 pi = coulomb_k / c^2. Magnetic forces
-    # are ~ (v/c)^2 times electric ones, so a lower c makes them stronger. Electrons
-    # drift at ~0.01-1, far below this.
-    speed_of_light: float = 2.0
-    # Softening length (cells) of ions and electrons on the grid: each charge is a
-    # Gaussian cloud with potential erf(r / eps) / r. Ions are smeared over ~their cell,
-    # so neighbouring ions form a smooth positive background electrons can roam over
-    # (a lattice ripple of roughly exp(-(pi * 0.8)^2) ~ 0.2%). Electrons must use the same
-    # value: softened charges only cancel exactly when smeared alike, otherwise every
-    # neutral cell leaks a ~1/r^4 field that adds up across a conductor.
-    conductor_softening: float = 0.8
-    test_charge_softening: float = 0.5
-    # Within electron_cutoff (cells), electrons repel as charges softened by only
+    # are ~ (v/c)^2 times electric ones. In 2D a loop is a solenoid with inductance
+    # mu0 * area ~ 1/c^2: at 8 circuits settle in tens of time units, at 2 they ring for
+    # hundreds. Electrons drift at ~0.01-1, far below this.
+    speed_of_light: float = 8.0
+    # Passes of a 1-2-1 smoothing filter applied to charge and current: the grid's
+    # softening. Each pass smears every charge over about another half cell. Two passes
+    # keep the grid force on an electron steady wherever it sits in its cell; fewer let
+    # it jitter with the electron's position (grid heating), so thin wires carry less.
+    smoothing_passes: int = 2
+    # Width (cells) of the absorbing layer around the visible grid, and how strongly it
+    # damps (per time unit, at its outer edge; it ramps up gradually).
+    absorbing_margin: int = 16
+    absorbing_strength: float = 3.0
+    # Within electron_cutoff (cells), electrons repel as line charges smeared over only
     # electron_softening, and ions attract them as charge spread evenly over their cells
-    # (fields.CloseRange). The grid alone smears each electron over ~a cell, too coarse
-    # to keep them apart: they stacked up on a wire's centre line. With this they fill
-    # it evenly. The correction is the erfc remainder of the grid's erf split, which falls
-    # below 1% of the force at 2.5 conductor_softening, where it is cut off. Cost grows
-    # with cutoff^2; 0 turns it off.
+    # (close_range.py). The grid alone smears each electron over ~a cell, too coarse to
+    # keep them apart: they stacked up on a wire's centre line. With this they fill it
+    # evenly. The correction is what the smoothed grid leaves out of that force; it falls
+    # to ~0.3% of its peak at 3 cells, where it is cut off. Cost grows with cutoff^2;
+    # 0 turns it off.
     electron_softening: float = 0.25
-    electron_cutoff: float = 2.0
+    electron_cutoff: float = 3.0
 
     # Fixed test charges (in units of e) painted with the charge tool.
     test_charge_values: tuple[float, ...] = (-10, -5, -2, -1, -0.5, 0.5, 1, 2, 5, 10)
