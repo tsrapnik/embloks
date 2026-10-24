@@ -119,8 +119,11 @@ of the way from row 6 to row 7, so its weights are:
 
 The weights add up to 1, so no charge is lost. Doing this for all electrons gives the charge grid
 ρ: one number per node, -5 e in total. Moving electrons carry current, q·v, which is deposited the
-same way into the current grid J. In the code this is `CloudInCell.deposit` in
-[fields.py](../src/embloks/fields.py).
+same way into the current grid J. In the code this is `CloudInCell::deposit` in
+[fields.rs](../crates/embloks-core/src/fields.rs); on the GPU each node gathers from the
+electrons in the cells around it instead (`deposit` in
+[fields.wgsl](../crates/embloks-gpu/src/shaders/fields.wgsl)), so no two threads add to the same
+number.
 
 ![Left: the scene and the 4 weights of electron 0. Right: the resulting charge grid, one square
 per node](images/pic_assign.png)
@@ -150,7 +153,7 @@ there, averaged from the two nodes it joins).
 ![The staggered grid: nodes, edges for Ex and Ey, corners for Bz](images/pic_yee.png)
 
 The two updates leapfrog: half a step of B, a full step of E, another half step of B (in
-`Maxwell.step`, [maxwell.py](../src/embloks/maxwell.py)). This is second-order accurate and
+`Maxwell::step`, [maxwell.rs](../crates/embloks-core/src/maxwell.rs)). This is second-order accurate and
 conserves the field energy, as long as light crosses less than 1/√2 cell per step (the CFL
 condition). At c = 8 and a tick of 1/30 that is 0.38 cell; a faster c is split into substeps.
 
@@ -168,8 +171,14 @@ present charges (the Coulomb gauge), and only the fields of changing currents tr
 
 Poisson's equation is solved exactly in one go: with zero potential just outside the grid, the
 discrete Laplacian is diagonal in the type-I sine transform, so it is a forward transform, a
-division and an inverse transform (`Maxwell._poisson`). The same solve also gives the electric
+division and an inverse transform (`Maxwell::poisson`). The same solve also gives the electric
 potential of the charges, which the batteries measure.
+
+On the GPU the sine transform along each axis is a multiplication by a fixed sine matrix
+([poisson.wgsl](../crates/embloks-gpu/src/shaders/poisson.wgsl)). That costs more arithmetic than a
+fast transform (M·√M instead of M·log M), but it is exact for any grid size, keeps every thread
+busy, and the largest canvas needs about 75 million multiply-adds per tick: a light load for a
+GPU.
 
 ![The potential of the example scene, and the field it gives](images/pic_poisson.png)
 
@@ -198,23 +207,25 @@ their PM forces mostly come from the other electrons.
 
 Every pair closer than the cutoff gets the near force of the split above, equal and opposite. In
 the example only electrons 1 and 2 are close enough to matter (middle panel); they now repel
-strongly. In the code this is `CloseRange.force` in
-[close_range.py](../src/embloks/close_range.py).
+strongly. In the code this is `CloseRange::force` in
+[close_range.rs](../crates/embloks-core/src/close_range.rs), and `close_force` in
+[particles.wgsl](../crates/embloks-gpu/src/shaders/particles.wgsl) on the GPU.
 
 The near force is tabulated once against r², so a pair costs a table lookup, not an exponential.
 To find the pairs, the electrons are sorted by cell, and each one only checks the cells within
 the cutoff. In a conductor with 8 electrons per cell that still leaves 100-200 neighbours per
-electron, so this loop is compiled with Numba rather than written as NumPy array operations
-(which would need large temporary arrays of all pairs). It is the most expensive part of a
-tick on large canvases.
+electron. It is the most expensive part of a tick on large canvases, and the part that gains
+most from the GPU: there every electron sums its own neighbours in its own thread (each pair is
+then visited twice, once from each side, so no two threads write the same force).
 
 ## Adding up
 
 ### Step 7. Total force, then move
 
 The total force on each electron is PM + PP. Then the electrons move: their velocity changes by
-F/m·dt, minus the drag of the cell they are in, and they take their step (`physics.step` in
-[physics.py](../src/embloks/physics.py)). Finally the fields advance by one tick with the new
+F/m·dt, minus the drag of the cell they are in, and they take their step (`physics::step` in
+[physics.rs](../crates/embloks-core/src/physics.rs), `push` in
+[particles.wgsl](../crates/embloks-gpu/src/shaders/particles.wgsl)). Finally the fields advance by one tick with the new
 charge and current, steps 1-4. Next tick, the forces are read from those fields.
 
 The right panel of the force figure compares PM + PP with brute force: direct sums of the wanted
@@ -305,14 +316,22 @@ harder than the grid potential alone shows. The steady state is V = EMF - I·R.
   border, then placed in the larger grid with its margin: the same result for less work.
 - **Painting while paused.** Charge painted between ticks gets its field at once: step 4 is run
   again whenever the materials or test charges change, so the display never shows stale fields.
-- **Drawing.** Arrow geometry is computed for all arrows at once with NumPy, then drawn with one
-  call per arrow; layers at full opacity draw straight to the screen, and only translucent ones
-  go through an overlay. Electrons are one pre-drawn dot sprite blitted in a single batched
-  call, or single pixels written into the screen array when there are very many. On fine grids
-  only every n-th cell gets a field arrow. The material image is only redrawn after painting.
+- **Single precision on the GPU.** The GPU computes in 32-bit floats; its results follow the
+  64-bit CPU reference closely (the tests compare them), with two adjustments: an electron stopped
+  at a wall stays 10⁻⁴ cell inside it rather than 10⁻⁶ (too close to resolve at x ≈ 200), and
+  the AC sources' sin(2πft) uses t modulo 1000, which keeps the phase exact.
+- **No read back while running.** On the GPU a frame's ticks are recorded in one go: the number
+  of electron substeps depends on the fastest electron, so the GPU writes it into indirect
+  dispatch arguments itself. The CPU only reads back a small block of numbers for the info panel
+  each frame, and the electrons when you paint or save.
+- **Drawing.** Everything is drawn straight from the simulation's buffers: one pass computes each
+  pixel's material, ion ring, battery stripes, B colour and grid line; arrows and electrons are
+  instanced quads whose shapes are computed in the vertex shader. On fine grids only every n-th
+  cell gets a field arrow.
 
 ## Regenerating the figures
 
-All figures on this page are drawn by [make_figures.py](make_figures.py) with the app's own code.
-It needs matplotlib: `pip install matplotlib`, then `python docs/make_figures.py` from the
-repository root.
+The figures on this page were drawn with matplotlib from the original Python version of Embloks,
+whose physics the Rust code reproduces (the tests check it against numbers saved from that
+version). The script is no longer in the repository; it is in the history as
+`docs/make_figures.py`.

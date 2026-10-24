@@ -1,0 +1,23 @@
+[package]
+name = "embloks-gpu"
+description = "Embloks on the GPU: the physics in WebGPU compute shaders, and the renderer"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+bytemuck = { version = "1.25.2", features = ["derive"] }
+embloks-core = { path = "../embloks-core" }
+ndarray = "0.17.2"
+wgpu = { version = "30.0.1", default-features = false, features = ["std", "parking_lot", "wgsl", "webgpu"] }
+
+[dev-dependencies]
+png = "0.18.1"
+pollster = "1.0.1"
+rand = { version = "0.10.3", default-features = false }
+rand_pcg = { version = "0.10.2", default-features = false }
+
+# Native builds (tests, tools) talk to the platform's GPU API; the web build only
+# needs WebGPU.
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+wgpu = { version = "30.0.1", features = ["vulkan", "metal", "dx12", "gles"] }

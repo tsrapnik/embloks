@@ -1,29 +1,48 @@
 # Embloks
 
-A grid-based electromagnetism sandbox. Paint vacuum, conductors and batteries onto a grid and
-watch the electric, magnetic and Poynting fields evolve. Curious how the fields and forces are
-computed? See [docs/fields.md](docs/fields.md).
+A grid-based electromagnetism sandbox that runs in the browser. Paint vacuum, conductors and
+batteries onto a grid and watch the electric, magnetic and Poynting fields evolve. Curious how
+the fields and forces are computed? See [docs/fields.md](docs/fields.md).
+
+Embloks is written in Rust and compiled to WebAssembly; the physics runs in WebGPU compute
+shaders and is drawn with WebGPU, so it needs a browser with WebGPU (recent Chrome, Edge,
+Safari or Firefox).
 
 ## Running
 
-Requires Python 3.11+ and a display (in the devcontainer on WSL2, WSLg provides one).
+Requires Rust with the `wasm32-unknown-unknown` target and [Trunk](https://trunkrs.dev/) (the dev
+container installs both).
 
 ```bash
-python3 -m venv .venv
-source .venv/bin/activate
-pip install -e ".[dev]"
-
-python -m embloks      # or simply: embloks
+cd crates/embloks-web
+trunk serve            # then open http://localhost:8080
+trunk build            # or: a static site in dist/, to host anywhere
 ```
+
+The site is static files only (no server-side code, no special headers), so any web host will
+do. A few URL options help when testing:
+
+| Option           | Effect                                                                 |
+|------------------|------------------------------------------------------------------------|
+| `?backend=cpu`   | Run the physics on the CPU (the double-precision reference) instead    |
+| `?paused`        | Start with the physics paused                                          |
+| `?offscreen`     | Draw to an offscreen texture instead of the canvas, for automated tests on software GPUs that can't present to a canvas; `wasmBindings.request_snapshot()` and `wasmBindings.snapshot()` read the frames back |
 
 ## Tests
 
 ```bash
-pytest
+cargo test --workspace
 ```
 
-Tests live in [tests/](tests/) and run without a display (`tests/conftest.py` selects SDL's dummy
-video driver). Configuration is the `[tool.pytest.ini_options]` section of `pyproject.toml`.
+- [crates/embloks-core](crates/embloks-core/): the physics reference, scenes, saves and the app's
+  behaviour, including physics checks (Gauss's law, waves at the speed of light, screening, Ohm's
+  law, induction, antennas, electrons never escaping their island) and comparisons with numbers
+  saved from the original Python version ([tests/fixtures](crates/embloks-core/tests/fixtures/)).
+- [crates/embloks-gpu](crates/embloks-gpu/): the compute shaders against the CPU reference, the
+  same physics checks on the GPU, and rendered images of example scenes (written to
+  `target/renders/`). They need a GPU adapter: in the dev container the software Vulkan driver
+  lavapipe provides one. Without any adapter they are skipped.
+- [crates/embloks-web](crates/embloks-web/): key mapping and the panels' HTML.
 
 ## Using the app
 
@@ -37,7 +56,7 @@ video driver). Configuration is the `[tool.pytest.ini_options]` section of `pypr
 | `F`                 | Battery frequency: DC, or AC at 0.02-0.2 cycles per time unit |
 | `[` / `]` or wheel  | Smaller / larger brush                                        |
 | `C`                 | Clear the canvas                                              |
-| Ctrl + `0`-`9`      | Save the scene to a slot                                      |
+| Ctrl + Shift + `0`-`9` | Save the scene to a slot                                   |
 | Shift + `0`-`9`     | Load the scene from a slot                                    |
 | `F1` - `F7`         | Load an example scene (see *Example scenes*)                  |
 | `P`                 | Hide / show particles (ions and electrons)                    |
@@ -49,7 +68,12 @@ video driver). Configuration is the `[tool.pytest.ini_options]` section of `pypr
 | `+` / `-`           | Finer / coarser grid (resets the scene)                       |
 | Space               | Pause / resume physics                                        |
 | `,` / `.` (`<` `>`) | Slower / faster simulation (¼× to 64×, default 8×)            |
-| Esc                 | Quit                                                          |
+| Esc                 | Cancel the current stroke                                     |
+
+The toolbar at the bottom offers the same (tools, values, brush, speed, example scenes, saves),
+for touch screens too: there **Erase** makes a drag erase. `F1`-`F7` are taken by some browsers
+or keyboards; the toolbar's *Examples* menu always works. Browsers keep Ctrl + digit for
+switching tabs, hence Ctrl + **Shift** + digit for saving.
 
 **Erasing:** right-click decides once, when you press the button: if a test charge is under the
 brush, that stroke removes test charges only (dragging over wires leaves them intact); otherwise
@@ -60,8 +84,9 @@ charge, then the wire.
 
 The canvas is divided into a grid of square cells. The grid density (about how many columns fit
 across the window, 4 to 200) is set by `grid_density` in
-[src/embloks/config.py](src/embloks/config.py) and changed live with `+`/`-`, which clears the
-canvas. On very fine grids the grid lines are hidden so they don't drown out the canvas.
+[settings.rs](crates/embloks-core/src/settings.rs) and changed live with `+`/`-`, which clears the
+canvas. The example scenes always use a 40 x 32 grid, whatever the window's shape. On very fine
+grids the grid lines are hidden so they don't drown out the canvas.
 
 ### Materials
 
@@ -97,7 +122,7 @@ A battery cell holds 4 times as much (`battery_density`): an ion of +16 e and 32
 The charge per cell sets how many free electrons a wire has. Batteries need to pile up some
 charge on their terminals to hold their voltage, and a wire with too few electrons would simply
 run empty (real metals have enormously many). Both values are in
-[config.py](src/embloks/config.py).
+[settings.rs](crates/embloks-core/src/settings.rs).
 
 Painting a conductor or battery cell adds its ion and electrons. Erasing a cell removes its ion
 and the same number of electrons from that island: first electrons inside the erased cell, then
@@ -149,7 +174,7 @@ with pictures, is in [docs/fields.md](docs/fields.md).
 Yellow arrows show the electric field **E** at cell centres: the force a positive charge would
 feel there. It comes from all charges (ions, electrons and test charges) and from changing
 magnetic fields. Both arrow length and brightness grow with the *logarithm* of the field strength
-(between `e_field_min` and `e_field_max` in [config.py](src/embloks/config.py)), because fields
+(between `e_field_min` and `e_field_max` in [settings.rs](crates/embloks-core/src/settings.rs)), because fields
 near a charge are many times stronger than fields far away. On fine grids only every n-th cell
 gets an arrow, so arrows don't overlap. The info panel shows the E value under the mouse. Scale,
 opacity and linear/log display can be changed in the layers panel (see *Display layers*).
@@ -211,7 +236,7 @@ the loop is closed.
 
 The magnetic force is perpendicular to an electron's motion: it steers, never speeds up. It is
 roughly (v/c)² times weaker than the electric force, where `speed_of_light` (8 cells per time
-unit in [config.py](src/embloks/config.py)) is much larger than the electrons' drift speeds, so
+unit in [settings.rs](crates/embloks-core/src/settings.rs)) is much larger than the electrons' drift speeds, so
 its effect on the motion is tiny, as in real circuits. Lowering `speed_of_light` exaggerates it
 (and makes circuits more inductive, see above).
 The colours are scaled by c², so they look the same whatever c is. The info panel shows B under
@@ -271,19 +296,20 @@ physics settings and display layers to their defaults, then shows the layers tha
   speed; the green S arrows point outwards (radiated energy). Hover the receiver's middle and
   read *Wire I*.
 
-Save your own variations to a slot with Ctrl + digit.
+Save your own variations to a slot with Ctrl + Shift + digit.
 
 ### Saving and loading
 
-**Ctrl + a digit** saves the whole scene to one of ten slots, **Shift + the digit** loads it
-back. A slot is a file `saves/slot<N>.npz` (relative to where you start the app), so you can copy
-or share them. A short message in the info panel confirms each save or load.
+**Ctrl + Shift + a digit** saves the whole scene to one of ten slots, **Shift + the digit** loads
+it back (or use the slot menu in the toolbar). Slots live in the browser's storage (IndexedDB),
+per site and browser. **Export** downloads the scene as a `.embloks` file and **Import** opens
+one, to keep or share scenes. A short message in the info panel confirms each save or load.
 
 A save holds everything needed to continue exactly where you left off: the materials, every
 electron with its velocity, test charges, the batteries' gains, the averaged currents,
 the simulated time, the speed and the display layers. It also stores the physics settings that
 shaped the scene (charge per cell, smoothing, speed of light, ...), and restores them on load,
-so a scene behaves the same even after `config.py` was edited. Loading resizes the grid to the
+so a scene behaves the same even after the defaults in `settings.rs` change. Loading resizes the grid to the
 saved scene. The fields themselves aren't saved: a loaded scene starts them from rest (only the
 static field of its charges), so waves and induced currents take a moment to build up again.
 
@@ -329,7 +355,7 @@ resistor), and only then does the current flow evenly around the loop. So by def
 simulation runs at **8×**: 8 time units per real second, and a typical loop reaches its steady
 current within about 10 seconds. `,` and `.` halve or double the speed (¼× to 64×); the info
 panel shows it. If the computer can't keep up (large grids, high speeds) the simulation runs
-slower than chosen rather than freezing; the window title shows the frame rate and simulated
+slower than chosen rather than freezing; the page title shows the frame rate and simulated
 time.
 
 ### Batteries
@@ -409,23 +435,40 @@ exact value, so they never slide over from a stale one. Only the displayed numbe
 filtered, not the physics. E inside a wire still moves a little: it is small on average and
 fluctuates slowly as single electrons pass.
 
-The window title shows the frame rate, simulation time, paused state and grid size
-(columns x rows).
+The page title shows the frame rate, simulation time, paused state, grid size (columns x rows)
+and where the physics runs (GPU or CPU).
 
 ## Under the hood
 
+### Structure
+
+Three Rust crates, plus the WGSL shaders and a small HTML page:
+
+- [embloks-core](crates/embloks-core/): everything that doesn't need a browser or a GPU: the
+  world being painted (materials, electrons, batteries, islands), the physics as a
+  double-precision reference implementation, the example scenes, saves, and the app's state and
+  input handling (keys, strokes, the fixed time step, the info panel's content).
+- [embloks-gpu](crates/embloks-gpu/): the same physics in WebGPU compute shaders
+  ([shaders/](crates/embloks-gpu/src/shaders/)), and the renderer. The CPU keeps the world for
+  painting; electrons, fields and battery gains live on the GPU between edits, and a frame's
+  ticks are recorded without reading anything back. Painting or saving first reads the electrons
+  back (about a frame); the info panel's numbers come back in a small block every frame.
+- [embloks-web](crates/embloks-web/): the browser front end: canvas and WebGPU set-up, mouse,
+  touch and keyboard, the info panel, layers panel and toolbar as HTML over the canvas, and save
+  slots.
+
 ### Libraries
 
-- **[pygame-ce](https://pyga.me/)**: window, mouse/keyboard input and drawing.
-- **[NumPy](https://numpy.org/)**: all simulation state lives in arrays (one entry per cell or
-  per electron), so every step is a handful of vectorised operations instead of Python loops.
-- **[SciPy](https://scipy.org/)**: sine transforms for Gauss's law, connected-component
-  labelling to find islands.
-- **[Numba](https://numba.pydata.org/)**: compiles the one loop that doesn't vectorise well,
-  the close-range forces between nearby electrons. The first start takes a few seconds longer
-  while it compiles; the result is cached.
-- **[pytest](https://pytest.org/)**: tests, including physics checks (Gauss's law, waves at the
-  speed of light, screening, Ohm's law, induction, electrons never escaping their island).
+- **[wgpu](https://wgpu.rs/)**: WebGPU from Rust, in the browser and natively (the GPU tests run
+  through Vulkan, Metal or DX12).
+- **[wasm-bindgen](https://rustwasm.github.io/wasm-bindgen/)** and
+  **[web-sys](https://rustwasm.github.io/wasm-bindgen/web-sys/)**: the browser's APIs from Rust.
+- **[ndarray](https://github.com/rust-ndarray/ndarray)**: arrays for the CPU reference.
+- **[rustdct](https://github.com/ejmahler/rust_dct)**: sine transforms for Gauss's law on the
+  CPU (the GPU multiplies by sine matrices instead).
+- **[serde](https://serde.rs/)**, **[postcard](https://github.com/jamesmunns/postcard)** and
+  **[miniz_oxide](https://github.com/Frommi/miniz_oxide)**: saves.
+- **[Trunk](https://trunkrs.dev/)**: builds the site (no JavaScript tooling needed).
 
 ### How the fields are computed
 
@@ -435,18 +478,26 @@ and steps Maxwell's equations there (a particle-in-cell method), which costs abo
 cell however many electrons there are. The grid smooths every charge over a couple of cells, so
 electrons closer than `electron_cutoff` are also paired up directly, adding the difference.
 [docs/fields.md](docs/fields.md) explains it step by step, with pictures of an example scene,
-along with the other techniques (stable drag, substeps, the absorbing border).
+along with the other techniques (stable drag, substeps, the absorbing border, single precision
+on the GPU).
 
-Typical times per physics tick, and per frame at the default 8× speed (4 ticks plus drawing,
-all field layers on):
+### Performance
 
-| Grid      | Electrons | Tick    | Frame    |
-|-----------|-----------|---------|----------|
-| 40 × 32   | ~3,000    | ~3 ms   | ~20 ms   |
-| 100 × 80  | ~19,000   | ~18 ms  | ~80 ms   |
-| 200 × 160 | ~76,000   | ~75 ms  | ~310 ms  |
+Time per physics tick, with 30% of the canvas filled with wire and 8 electrons per cell:
 
-(30% of the canvas filled with wire, 8 electrons per cell.)
+| Grid      | Electrons | CPU reference |
+|-----------|-----------|---------------|
+| 40 × 32   | ~3,000    | ~2.4 ms       |
+| 100 × 80  | ~19,000   | ~15 ms        |
+| 200 × 160 | ~76,000   | ~59 ms        |
 
-On large grids the close-range forces dominate, then the field solve; the simulation then runs
-slower than the chosen speed instead of freezing.
+(One core; the default 8× speed runs 4 ticks per frame.) The GPU runs every electron and every
+cell in parallel; measure it on your machine with
+
+```bash
+cargo run --release -p embloks-gpu --example bench
+```
+
+which times both on the same scenes. If the GPU can't keep up (large grids, high speeds), at
+most two frames of work wait for it and the simulation runs slower than chosen instead of
+freezing.

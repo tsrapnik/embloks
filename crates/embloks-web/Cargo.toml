@@ -1,0 +1,22 @@
+[package]
+name = "embloks-web"
+description = "Embloks in the browser: canvas, input, info panel and saves around the WebGPU simulation"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+bytemuck = "1.25.2"
+console_error_panic_hook = "0.1.7"
+embloks-core = { path = "../embloks-core" }
+embloks-gpu = { path = "../embloks-gpu" }
+futures-channel = "0.3.34"
+js-sys = "0.3.106"
+ndarray = "0.17.2"
+wasm-bindgen = "0.2.129"
+wasm-bindgen-futures = "0.4.79"
+web-sys = { version = "0.3.106", features = ["Window", "Document", "Element", "HtmlElement", "HtmlCanvasElement", "HtmlInputElement", "HtmlSelectElement", "HtmlAnchorElement", "KeyboardEvent", "PointerEvent", "MouseEvent", "WheelEvent", "Event", "EventTarget", "CssStyleDeclaration", "DomTokenList", "Performance", "Blob", "BlobPropertyBag", "Url", "File", "FileList", "IdbFactory", "IdbDatabase", "IdbOpenDbRequest", "IdbRequest", "IdbObjectStore", "IdbTransaction", "IdbTransactionMode", "IdbVersionChangeEvent", "Location", "Navigator", "console", "AddEventListenerOptions", "Gpu", "DomRect", "DomStringList"] }
+wgpu = { version = "30.0.1", default-features = false, features = ["std", "parking_lot", "wgsl", "webgpu"] }

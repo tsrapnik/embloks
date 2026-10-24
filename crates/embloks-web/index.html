@@ -1,0 +1,19 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Embloks</title>
+  <meta name="description" content="A grid-based electromagnetism sandbox: paint wires and batteries, watch E, B and energy flow.">
+  <link data-trunk rel="css" href="style.css">
+  <link data-trunk rel="rust" href="Cargo.toml" data-wasm-opt="s">
+</head>
+<body>
+  <canvas id="canvas" tabindex="0"></canvas>
+  <div id="info" class="panel" aria-live="off"></div>
+  <div id="layers" class="panel"></div>
+  <div id="toolbar" class="panel"></div>
+  <div id="notice" hidden></div>
+  <input id="import" type="file" accept=".embloks" hidden>
+</body>
+</html>
