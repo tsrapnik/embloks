@@ -86,7 +86,8 @@ between the islands at their terminals instead.
 
 Every conductor cell holds:
 
-- one fixed **positive ion** (red ring) at its centre, with charge +4 e (`cell_charge`), and
+- one fixed **positive ion** (red ring, drawn at the centre), with charge +4 e (`cell_charge`)
+  spread evenly over the cell (see *Charge distribution*), and
 - 8 **electrons** (blue dots) of charge -0.5 e each (`carriers_per_cell`), which move freely
   within their island (see *Electron motion*), so the cell is neutral overall. Splitting the
   charge finely matters: a battery moves one electron at a time, so smaller electrons mean a
@@ -125,8 +126,49 @@ opacity and linear/log display can be changed in the layers panel (see *Display 
 Each charge is slightly "smeared" (a softening length in config.py), so fields never become
 infinite at a charge. Ions are smeared over about a cell: together, neighbouring ions then act
 like a smooth positive background, which is what lets electrons move freely through a conductor
-instead of each one getting stuck on an ion. Electrons are smeared exactly the same way
-(`conductor_softening`), so an electron sitting on its ion cancels it completely.
+instead of each one getting stuck on an ion. How exactly ions and electrons are smeared is
+described next.
+
+### Charge distribution
+
+The field is computed on the grid (see *Under the hood*), and the grid can only hold charge on
+cell centres. Each charge is therefore described twice: a coarse version on the grid that sets
+all fields at a distance, and a sharper version used only between charges less than
+`electron_cutoff` (1 cell) apart.
+
+**Ions.** The grid holds each ion's +4 e as shares on its own and its 8 neighbouring cell centres
+(1), each share then smeared with a softening of 0.8 cell (`conductor_softening`) (2). The shares
+are exactly what a charge spread evenly over the cell puts on the grid, and at close range the ion
+*is* that evenly spread charge (3). In a wire the ions therefore form an even positive
+background up to the walls, with no favoured spot inside a cell.
+
+![A conductor cell's ion: its shares on the grid, the smeared long-range version and the
+uniform close-range version](docs/images/ion.png)
+
+**Electrons.** On the grid an electron's charge is shared over the 4 nearest cell centres in
+proportion to how close it is (*cloud-in-cell*), and smeared like the ions (top row). Its shape
+on the grid thus depends on where it sits: on a cell centre it looks exactly like an ion, on a
+corner it is a broad, flat cloud. That cloud is far too wide to keep electrons apart: two
+electrons a quarter of a cell apart barely repel through the grid. So within 1 cell, electrons
+interact as compact balls with a softening of only 0.25 (`electron_softening`, bottom row): they
+push each other apart, while the evenly spread ions hold them in. An electron gas filling a
+conductor evenly feels no net close-range force, just as with the grid fields.
+
+![One electron at four positions: its grid cloud (top) and its compact close-range ball
+(bottom)](docs/images/electron.png)
+
+Without the close-range part (set `electron_cutoff` to 0), electrons in a thin wire collapse
+into a few tight stacks: two electrons at the same spot feel no force from each other through
+the grid, and identical forces keep them together. With it, they spread evenly over the wire
+(the right picture below starts from the same stacked state):
+
+![Repulsion between two electrons versus distance, and electrons in a wire with the close-range
+part off and on](docs/images/electron_spacing.png)
+
+The batteries include the close-range part when they read their terminal voltage (averaged over
+each cell, as at a single point it would jump with every electron passing by): electrons crowded
+at a terminal push harder than the grid potential alone shows. The figures are drawn by
+[docs/make_figures.py](docs/make_figures.py) (needs matplotlib).
 
 ### Electron motion
 
@@ -148,8 +190,11 @@ panel shows the mean |E| over all conductor cells, which drops as the electrons 
 never reaches exactly zero: a few discrete electrons per cell are grainy, so some small arrows of
 random direction remain. More `carriers_per_cell` makes it smoother.
 
-Newly painted cells get their electrons right on top of their ions, so a fresh conductor is
-neutral everywhere and has no field until something disturbs it.
+Newly painted cells get their electrons spread evenly over the cell, matching the ion, so a fresh
+conductor is nearly field-free. The outermost electrons settle a little in the first few time
+units, and the electrons end up in a regular pattern (see *Charge distribution*). Conductor
+surfaces keep a small field (about 0.04, fading within a few cells) where the electrons next to a
+wall settle slightly inwards.
 
 ### Magnetic field
 
@@ -399,8 +444,15 @@ The window title shows the frame rate, simulation time, paused state and grid si
 - **Charge smoothing (softening).** Each charge is treated as a small blurred cloud rather than
   a point: `E = k·q·r / (r² + ε²)^1.5`. This keeps fields finite when charges get close, makes a
   charge's field at its own centre zero (so nothing pushes itself), and smooths the ions into an
-  even positive background that electrons can glide over. Ions and electrons share the same ε, so
-  an electron sitting on its ion cancels it exactly.
+  even positive background that electrons can glide over. On the grid, ions and electrons share
+  the same ε, so an evenly filled conductor cancels exactly.
+- **Close-range correction.** Between electrons less than `electron_cutoff` apart, the
+  difference between a compact (ε = 0.25) and the grid's (ε = 0.8) Coulomb force is added
+  directly, pair by pair (pairs found with a k-d tree), tapered smoothly to zero at the cutoff.
+  The ions' matching close-range pull only depends on which cells around an electron conduct, so
+  it is tabulated once per distinct 3 × 3 neighbourhood when you paint, and read back with one
+  lookup per electron. This roughly doubles the cost of a physics step in typical scenes, and
+  costs more in very large solid conductors (the number of electron pairs grows with them).
 - **Fields via FFT.** Summing every charge's field at every cell costs
   `cells × charges` operations. Instead, the charges are put on the grid and the field (and the
   potential, which the batteries need) is computed as a convolution with the Coulomb kernel using
