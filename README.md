@@ -1,8 +1,8 @@
 # Embloks
 
 A grid-based electromagnetism sandbox. Paint vacuum, conductors and batteries onto a grid and
-watch the electric, magnetic and Poynting fields evolve. See [plan.md](plan.md) for the design
-and the step-by-step build plan.
+watch the electric, magnetic and Poynting fields evolve. Curious how the fields and forces are
+computed? See [docs/fields.md](docs/fields.md).
 
 ## Running
 
@@ -124,51 +124,15 @@ gets an arrow, so arrows don't overlap. The info panel shows the E value under t
 opacity and linear/log display can be changed in the layers panel (see *Display layers*).
 
 Each charge is slightly "smeared" (a softening length in config.py), so fields never become
-infinite at a charge. Ions are smeared over about a cell: together, neighbouring ions then act
-like a smooth positive background, which is what lets electrons move freely through a conductor
-instead of each one getting stuck on an ion. How exactly ions and electrons are smeared is
-described next.
+infinite at a charge. See *Charge distribution* next.
 
 ### Charge distribution
 
-The field is computed on the grid (see *Under the hood*), and the grid can only hold charge on
-cell centres. Each charge is therefore described twice: a coarse version on the grid that sets
-all fields at a distance, and a sharper version used only between charges less than
-`electron_cutoff` (1 cell) apart.
-
-**Ions.** The grid holds each ion's +4 e as shares on its own and its 8 neighbouring cell centres
-(1), each share then smeared with a softening of 0.8 cell (`conductor_softening`) (2). The shares
-are exactly what a charge spread evenly over the cell puts on the grid, and at close range the ion
-*is* that evenly spread charge (3). In a wire the ions therefore form an even positive
-background up to the walls, with no favoured spot inside a cell.
-
-![A conductor cell's ion: its shares on the grid, the smeared long-range version and the
-uniform close-range version](docs/images/ion.png)
-
-**Electrons.** On the grid an electron's charge is shared over the 4 nearest cell centres in
-proportion to how close it is (*cloud-in-cell*), and smeared like the ions (top row). Its shape
-on the grid thus depends on where it sits: on a cell centre it looks exactly like an ion, on a
-corner it is a broad, flat cloud. That cloud is far too wide to keep electrons apart: two
-electrons a quarter of a cell apart barely repel through the grid. So within 1 cell, electrons
-interact as compact balls with a softening of only 0.25 (`electron_softening`, bottom row): they
-push each other apart, while the evenly spread ions hold them in. An electron gas filling a
-conductor evenly feels no net close-range force, just as with the grid fields.
-
-![One electron at four positions: its grid cloud (top) and its compact close-range ball
-(bottom)](docs/images/electron.png)
-
-Without the close-range part (set `electron_cutoff` to 0), electrons in a thin wire collapse
-into a few tight stacks: two electrons at the same spot feel no force from each other through
-the grid, and identical forces keep them together. With it, they spread evenly over the wire
-(the right picture below starts from the same stacked state):
-
-![Repulsion between two electrons versus distance, and electrons in a wire with the close-range
-part off and on](docs/images/electron_spacing.png)
-
-The batteries include the close-range part when they read their terminal voltage (averaged over
-each cell, as at a single point it would jump with every electron passing by): electrons crowded
-at a terminal push harder than the grid potential alone shows. The figures are drawn by
-[docs/make_figures.py](docs/make_figures.py) (needs matplotlib).
+Each ion's charge is spread evenly over its cell, so neighbouring ions act like a smooth positive
+background that electrons glide over instead of getting stuck on single ions. Electrons are
+compact balls that push each other apart when they come within a cell of each other, so they
+spread evenly through a wire rather than piling up. Further away, every charge acts as a cloud
+about a cell wide. The details, with pictures, are in [docs/fields.md](docs/fields.md).
 
 ### Electron motion
 
@@ -192,7 +156,7 @@ random direction remain. More `carriers_per_cell` makes it smoother.
 
 Newly painted cells get their electrons spread evenly over the cell, matching the ion, so a fresh
 conductor is nearly field-free. The outermost electrons settle a little in the first few time
-units, and the electrons end up in a regular pattern (see *Charge distribution*). Conductor
+units, and the electrons end up in a regular pattern. Conductor
 surfaces keep a small field (about 0.04, fading within a few cells) where the electrons next to a
 wall settle slightly inwards.
 
@@ -439,61 +403,14 @@ The window title shows the frame rate, simulation time, paused state and grid si
 - **[pytest](https://pytest.org/)**: tests, including physics checks (Coulomb's law, screening,
   electrons never escaping their island).
 
-### Techniques and optimizations
+### How the fields are computed
 
-- **Charge smoothing (softening).** Each charge is treated as a small blurred cloud rather than
-  a point: `E = k·q·r / (r² + ε²)^1.5`. This keeps fields finite when charges get close, makes a
-  charge's field at its own centre zero (so nothing pushes itself), and smooths the ions into an
-  even positive background that electrons can glide over. On the grid, ions and electrons share
-  the same ε, so an evenly filled conductor cancels exactly.
-- **Close-range correction.** Between electrons less than `electron_cutoff` apart, the
-  difference between a compact (ε = 0.25) and the grid's (ε = 0.8) Coulomb force is added
-  directly, pair by pair (pairs found with a k-d tree), tapered smoothly to zero at the cutoff.
-  The ions' matching close-range pull only depends on which cells around an electron conduct, so
-  it is tabulated once per distinct 3 × 3 neighbourhood when you paint, and read back with one
-  lookup per electron. This roughly doubles the cost of a physics step in typical scenes, and
-  costs more in very large solid conductors (the number of electron pairs grows with them).
-- **Fields via FFT.** Summing every charge's field at every cell costs
-  `cells × charges` operations. Instead, the charges are put on the grid and the field (and the
-  potential, which the batteries need) is computed as a convolution with the Coulomb kernel using
-  FFTs, which costs about `cells × log(cells)` no matter how many electrons there are. The
-  kernel's FFT is computed once per grid size. The magnetic field reuses the same kernels: B is
-  the current density (charge × velocity) convolved with them, crossed.
-- **Cloud-in-cell.** Electrons sit anywhere, not just on cell centres, so each one's charge (and
-  current) is shared over the 4 nearest cell centres in proportion to how close it is. Each
-  electron reads the fields back with exactly the same weights. This symmetry means an electron
-  feels no electric or magnetic force from itself, and every push between two electrons is equal
-  and opposite.
-- **Caching.** Ions and test charges only change when you paint, so their field is computed once
-  and reused until then. Each tick only the electrons' part is recomputed. The material image is
-  likewise only redrawn after painting.
-- **Stable drag.** Resistance is applied implicitly, `v ← (v + a·dt) / (1 + Γ·dt)`, which stays
-  stable for any resistance; a simple explicit update would blow up at high resistance.
-- **Substeps.** If electrons move fast, a tick is split into smaller steps so that nothing moves
-  more than 0.4 cell at a time and can't tunnel through a one-cell wall.
-- **Shared weights.** The cloud-in-cell weights are computed once per substep and reused for
-  depositing charge and current and for reading E and B back at every electron.
-- **B in one transform.** B's two convolution terms are combined in frequency space before
-  transforming back, saving an inverse FFT. (Fusing E and B into one batched FFT was tried and
-  measured slower, so it isn't done.)
-- **Drawing.** Arrow geometry is computed for all arrows at once with NumPy, then drawn with one
-  call per arrow; layers at full opacity draw straight to the screen, and only translucent ones
-  go through an overlay. Electrons are one pre-drawn dot sprite blitted in a single batched
-  call, or single pixels written into the screen array when there are very many. On fine grids
-  only every n-th cell gets a field arrow.
-- **Dynamic fields (FDTD).** E and B live on a staggered (Yee) grid: Ex and Ey on cell edges,
-  B on cell corners, stepped with Faraday's and Ampère's laws in a leapfrog. After every step E is
-  corrected so that Gauss's law holds exactly (divergence cleaning, solved with a sine transform);
-  the electrostatic part is thereby instantaneous, as in the Coulomb gauge, and only fields of
-  changing currents travel at c. That also keeps the fields right when charge jumps without a
-  current (painting, battery transfers). A 16-cell margin with gradually rising damping absorbs
-  outgoing waves. Electrons read each field component from its own staggered position: averaging
-  onto cell centres first would hide an odd/even checkerboard of charge from them, which then
-  grows unchecked. Charge and current pass through a 1-2-1 smoothing filter (twice), dynamic
-  mode's counterpart of the softening length. If light would cross more than ~0.6 cell per
-  tick, the field step is split into substeps (the CFL stability limit).
-- **Large time step.** Drag is stable at any step and the electron motion is smooth, so a tick
-  can cover 1/30 time unit; results were checked to be identical up to 1/8.
+Summing the force of every charge on every electron would cost N² operations per step. Instead,
+Embloks uses **P3M**: the far-reaching part of the force is computed on the grid with FFTs, and
+only electrons closer than a cell are paired up directly. Ions and test charges are cached until
+you paint. [docs/fields.md](docs/fields.md) explains it step by step, with pictures of an example
+scene going through the FFTs, along with the other techniques (stable drag, substeps, the
+dynamic-field solver).
 
 Typical frame times at the default 8× speed, all field layers on:
 
