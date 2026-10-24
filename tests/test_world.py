@@ -49,13 +49,30 @@ def test_repainting_conductors_keeps_their_electrons():
     assert np.array_equal(world.particles.pos, before)
 
 
-def test_painting_a_battery_over_a_wire_removes_that_cells_charges():
+def test_painting_a_battery_over_a_wire_keeps_its_charges_and_adds_more():
     world = make_world()
     paint(world, row_of(2, 7, 3))
+    before = world.particles.pos.copy()
     world.paint(np.array([4]), np.array([3]), Material.BATTERY, emf=5)
-    assert len(world.particles) == 4
-    assert_electrons_inside_conductors(world)
+    s = world.settings
+    np.testing.assert_array_equal(world.particles.pos[: len(before)], before)
+    assert len(world.particles) == len(before) + (s.battery_density - 1) * s.carriers_per_cell
     assert len(world.stacks) == 1
+    assert world.materials.resistance[4, 3] == s.battery_resistance
+    # And back to a wire: the extra electrons leave again.
+    paint(world, row_of(4, 5, 3))
+    assert len(world.particles) == len(before)
+
+
+def test_a_painted_battery_gets_a_dense_ion_and_electrons():
+    world = make_world()
+    world.paint(np.array([4]), np.array([3]), Material.BATTERY, emf=5)
+    s = world.settings
+    assert world.materials.density[4, 3] == s.battery_density
+    assert len(world.particles) == s.battery_density * s.carriers_per_cell
+    assert_electrons_inside_conductors(world)
+    world.paint(np.array([4]), np.array([3]), Material.VACUUM)
+    assert len(world.particles) == 0
 
 
 def test_erasing_removes_electrons_of_erased_cells():

@@ -71,15 +71,16 @@ Every cell is one of (erase with right-click to get vacuum back):
 - **Conductor** (copper): carries charge. Each conductor cell has a resistance in ohms, picked
   from 0.1 to 100 with Up/Down before painting. Low-resistance cells are bright copper,
   high-resistance cells dark brown. Painting over a conductor replaces its resistance.
-- **Battery** (grey, red and blue stripes): an ideal voltage source, see *Batteries* below. The
-  red stripe/`+` marks the positive terminal, the blue stripe/`-` the negative one. Set the EMF
-  (1 to 10) with Up/Down and the direction of the `+` side with `R` before painting.
+- **Battery** (grey, red and blue stripes): a voltage source, see *Batteries* below. It conducts
+  like a wire, but pushes its electrons towards its `-` side. The red stripe/`+` marks the
+  positive terminal, the blue stripe/`-` the negative one. Set the EMF (1 to 10) with Up/Down
+  and the direction of the `+` side with `R` before painting.
 
-Conductor cells only connect through shared edges: two cells touching only at a corner are *not*
-connected. Dragging the brush always paints an edge-connected path, so a quick diagonal stroke
-still gives an unbroken wire. A group of connected conductor cells is called an *island*;
-electrons can never leave their island. Batteries are walls for electrons; they move charge
-between the islands at their terminals instead.
+Conductor and battery cells only connect through shared edges: two cells touching only at a
+corner are *not* connected. Dragging the brush always paints an edge-connected path, so a quick
+diagonal stroke still gives an unbroken wire. A group of connected cells is called an *island*;
+electrons can never leave their island. A battery belongs to the island of the wires it touches:
+electrons flow through it.
 
 ### Charges
 
@@ -89,19 +90,22 @@ Every conductor cell holds:
   spread evenly over the cell (see *Charge distribution*), and
 - 8 **electrons** (blue dots) of charge -0.5 e each (`carriers_per_cell`), which move freely
   within their island (see *Electron motion*), so the cell is neutral overall. Splitting the
-  charge finely matters: a battery moves one electron at a time, so smaller electrons mean a
-  steadier current (see *Batteries*).
+  charge finely matters: smaller electrons mean steadier currents and voltages.
+
+A battery cell holds 4 times as much (`battery_density`): an ion of +16 e and 32 electrons.
 
 The charge per cell sets how many free electrons a wire has. Batteries need to pile up some
 charge on their terminals to hold their voltage, and a wire with too few electrons would simply
 run empty (real metals have enormously many). Both values are in
 [config.py](src/embloks/config.py).
 
-Painting a conductor cell adds its ion and electrons. Erasing a cell (or painting a battery over
-it) removes its ion and the same number of electrons from that island: first electrons inside the
-erased cell, then the nearest ones. If more electrons than that were in the erased cell, the extras
-are pushed into the nearest remaining cell of the island (or disappear if the whole island is
-erased). Repainting a conductor with another resistance keeps its charges.
+Painting a conductor or battery cell adds its ion and electrons. Erasing a cell removes its ion
+and the same number of electrons from that island: first electrons inside the erased cell, then
+the nearest ones. If more electrons than that were in the erased cell, the extras are pushed into
+the nearest remaining cell of the island (or disappear if the whole island is erased). Painting a
+battery over a wire keeps the wire's electrons and adds the battery's extra ones; painting a wire
+over a battery takes the extras away again. Repainting a conductor with another resistance keeps
+its charges.
 
 Ion rings are only drawn when cells are large enough; on fine grids electrons become single pixels.
 
@@ -202,7 +206,7 @@ as a colour rather than arrows:
 
 Right-hand rule: curl the fingers of your right hand along the (conventional) current; your
 thumb points along B. A loop with current flowing anticlockwise on screen is red inside; outside
-it B is (nearly) zero, since in 2D a loop is a solenoid. A battery's own current counts too, so
+it B is (nearly) zero, since in 2D a loop is a solenoid. Electrons flow through batteries too, so
 the loop is closed.
 
 The magnetic force is perpendicular to an electron's motion: it steers, never speeds up. It is
@@ -276,7 +280,7 @@ back. A slot is a file `saves/slot<N>.npz` (relative to where you start the app)
 or share them. A short message in the info panel confirms each save or load.
 
 A save holds everything needed to continue exactly where you left off: the materials, every
-electron with its velocity, test charges, the batteries' internal state, the averaged currents,
+electron with its velocity, test charges, the batteries' gains, the averaged currents,
 the simulated time, the speed and the display layers. It also stores the physics settings that
 shaped the scene (charge per cell, smoothing, speed of light, ...), and restores them on load,
 so a scene behaves the same even after `config.py` was edited. Loading resizes the grid to the
@@ -330,25 +334,28 @@ time.
 
 ### Batteries
 
-A battery is an ideal **voltage source**: it keeps the voltage between its `+` and `-` terminals
-at its EMF. The terminals are the conductor cells touching its `+` and `-` faces.
+A battery is a **voltage source**: it keeps the voltage between its `+` and `-` terminals at
+its EMF. The terminals are the wire cells touching its `+` and `-` faces.
 
-Electrons never pass *through* a battery. Instead, like the ions in a real battery's electrolyte,
-it takes electrons from the wire at its `+` terminal and delivers them to the wire at its `-`
-terminal. Each tick it measures the voltage V between its terminals and moves charge at a rate
+A battery cell is a conductor with its own ion and electrons, and electrons flow through it like
+through any wire. On top of the electric field, its electrons feel an *impressed field* of EMF
+per cell pointing to the `+` side, so the force on them (they are negative) pushes them towards
+the `-` side. This stands in for the chemistry of a real battery. It is the "source force" of
+textbooks (EMF = ∮ f·dl) and the resistive voltage source of FDTD codes.
 
-    I = (EMF - V) / R_internal
+With nothing connected, electrons pile up at the `-` side until the electric field they make
+cancels the impressed field inside the battery. That happens exactly when V = EMF. With a
+circuit connected, the drag on the battery's own electrons is its internal resistance
+(`battery_resistance`, 0.1 per cell), so V = EMF - I·R_internal. Charge only ever moves
+continuously, so the fields see a smooth current, and nothing jumps.
 
-with a small internal resistance (`battery_resistance`, 0.1 per cell). With nothing connected,
-charge builds up until V = EMF and the battery stops. With a circuit connected, it keeps
-supplying exactly the current the circuit draws, at V = EMF - I·R_internal. You'll see electrons
-vanish on the `+` side and appear on the `-` side.
-
-In 2D every electron is a line of charge, so each one a battery moves shifts its terminal voltage
-by about 2. The voltage therefore jitters around the EMF from tick to tick; averaged over time it
-sits exactly at the EMF (the info panel's numbers are averaged). The rate above is applied
-implicitly, allowing for how much the battery's own transfers move its voltage, so it never
-overshoots, however many batteries share a terminal.
+The impressed field alone comes up short, though. With so few electrons per cell, the voltage
+rests on the handful of electrons at the battery's faces. It falls 10-25% short of the EMF, and
+it jitters as those electrons shift, which a circuit turns into a slowly wobbling current. So
+the battery measures what it delivers, V + I·R_internal, and keeps adjusting how strongly it
+pushes (its *gain*) until that equals the EMF. The adjustment takes about a quarter of a time
+unit (`battery_trim_time`). This is a feedback loop on the force, never on the charge. For an
+AC battery it learns the average shortfall over the cycle.
 
 - **Series:** battery cells lined up end to end along their axis form one battery. Their EMFs
   add, and a cell pointing the other way subtracts. Each cell adds 0.1 internal resistance.
@@ -359,15 +366,17 @@ overshoots, however many batteries share a terminal.
 - **Lumpy currents:** a small current is made of few electrons. At 0.12 e per time unit only one
   (-0.5 e) electron passes a point every ~4 time units, so readings averaged over a short time
   scatter by 10-20%. That is real shot noise of discrete charges, not an error.
-- **Current reading:** the battery's current is the charge it actually moved, averaged like
-  the wire currents (over `current_smoothing_time`, 2 time units).
+- **Current reading:** the battery's current is the current of its electrons, averaged over the
+  battery and its two terminal cells and over time like the wire currents
+  (`current_smoothing_time`, 2 time units).
 - **Patience:** the surface charges that steer the current around the loop take a while to
   build up: about 60 time units for a long loop of resistance-1 wire (under 10 seconds at the
   default 8× speed), less for lower resistance. Speed up with `.` if it's still too slow.
 - **Limits:** a battery whose terminals aren't both wired does nothing. Very high EMFs on
   small circuits empty the wires of electrons, which is why EMF stops at 10.
 
-Hover over a battery to see its stack's EMF, the measured terminal voltage and its current.
+Hover over a battery to see its stack's EMF, the measured terminal voltage, its current and its
+gain (typically 1.2-1.4: how much harder than the bare EMF it has to push).
 
 ### Info panel
 
@@ -378,10 +387,10 @@ conductors), the **cell under the mouse**,
 and the **keys**. `H` cycles between showing all of it, only status and cell, and nothing. For
 the cell under the mouse it shows:
 
-- the material, island number and electron count (or the battery's stack details),
+- the material, island number and electron count (and for batteries, the stack's details),
 - the electric potential **V**, field **E**, magnetic field **B** and energy flow **S** at
   its centre,
-- for conductors, the **current** through it: conventional current (the direction positive
+- for conductors and batteries, the **current** through it: conventional current (the direction positive
   charge would flow, opposite to the electrons), averaged over 2 time units
   (`current_smoothing_time`), like an ammeter's response time. **I** is the current through
   that one cell; **Wire I** is the total through the whole wire at that point, like a clamp
@@ -411,7 +420,7 @@ The window title shows the frame rate, simulation time, paused state and grid si
 - **[NumPy](https://numpy.org/)**: all simulation state lives in arrays (one entry per cell or
   per electron), so every step is a handful of vectorised operations instead of Python loops.
 - **[SciPy](https://scipy.org/)**: sine transforms for Gauss's law, connected-component
-  labelling to find islands, and graph distances along wires for the batteries.
+  labelling to find islands.
 - **[Numba](https://numba.pydata.org/)**: compiles the one loop that doesn't vectorise well,
   the close-range forces between nearby electrons. The first start takes a few seconds longer
   while it compiles; the result is cached.

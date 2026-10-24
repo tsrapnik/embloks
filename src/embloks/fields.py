@@ -72,7 +72,7 @@ def spread_over_cells(values: np.ndarray) -> np.ndarray:
 
 def ion_charge(materials, cell_charge: float) -> np.ndarray:
     """Charge of the fixed ions on the cell centres (cols, rows): spread over their cells."""
-    return spread_over_cells(materials.conductive * cell_charge)
+    return spread_over_cells(materials.density * cell_charge)
 
 
 def poynting(e_grid: np.ndarray, bz: np.ndarray, settings: Settings) -> np.ndarray:

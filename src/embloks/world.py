@@ -14,8 +14,10 @@ SPAWN_JITTER = 0.02
 class World:
     """Materials plus the charges they carry, kept consistent while painting.
 
-    Every conductor cell holds one fixed ion of charge +cell_charge, spread evenly
-    over the cell (see fields.ion_charge), and, when neutral, `carriers_per_cell` electrons of charge -cell_charge/n each.
+    Every conductive cell (conductor or battery) holds one fixed ion of charge
+    +density * cell_charge, spread evenly over the cell (see fields.ion_charge),
+    and, when neutral, density * carriers_per_cell electrons of charge
+    -cell_charge/n each. Wires have density 1, batteries battery_density.
     """
 
     def __init__(self, cols: int, rows: int, settings: Settings, rng: np.random.Generator | None = None):
@@ -23,13 +25,8 @@ class World:
         self.rng = rng or np.random.default_rng()
         self.materials = Materials(cols, rows)
         self.particles = Particles()
-        # Per battery stack: charge owed but not yet moved (less than one electron),
-        # and smoothed current, for display.
-        self.pump_charge: dict[Stack, float] = {}
-        self.pump_current: dict[Stack, float] = {}
-        # The same pumped charge per time, averaged only briefly: the battery current the
-        # fields see (the slow average would lag an AC source by much of a period).
-        self.pump_flow: dict[Stack, float] = {}
+        # Per battery stack: how much it scales its impressed field (battery.trim).
+        self.battery_gain: dict[Stack, float] = {}
         self._update_structure()
         # Fixed test charges, at most one per cell, at cell centres.
         self.fixed_pos = np.empty((0, 2))
@@ -56,18 +53,21 @@ class World:
         orientation: Orientation = Orientation.RIGHT,
         frequency: float = 0.0,
     ) -> None:
-        was_conductive = self.materials.conductive
+        density = 1.0
+        if material == Material.BATTERY:
+            resistance = self.settings.battery_resistance
+            density = self.settings.battery_density
+        old_density = self.materials.density.copy()
         old_labels = self.connectivity.labels
-        self.materials.paint(cols, rows, material, resistance, emf, orientation, frequency)
+        self.materials.paint(cols, rows, material, resistance, emf, orientation, frequency, density)
         self._update_structure()
 
-        is_conductive = self.materials.conductive
-        removed = was_conductive & ~is_conductive
-        added = is_conductive & ~was_conductive
-        if removed.any():
-            self._remove_carriers(removed, old_labels)
-        if added.any():
-            self._spawn_carriers(added)
+        n = self.settings.carriers_per_cell
+        change = np.rint((self.materials.density - old_density) * n).astype(np.int64)
+        if (change < 0).any():
+            self._remove_carriers(np.maximum(-change, 0), old_labels)
+        if (change > 0).any():
+            self._spawn_carriers(np.maximum(change, 0))
 
     def clear(self) -> None:
         self.materials.clear()
@@ -80,24 +80,9 @@ class World:
     def _update_structure(self) -> None:
         """Recompute islands and battery stacks after the materials changed."""
         self.connectivity = compute_connectivity(self.materials)
-        self.stacks = find_stacks(self.materials, self.settings.battery_resistance)
-        # Distance along the wires from every battery terminal, for choosing which
-        # electron a battery takes: the nearest one *along the wire*, never one
-        # that is merely close in a straight line (e.g. just across the battery).
-        terminals = sorted(
-            {t for st in self.stacks for t in (st.low, st.high) if self._is_conductor(t)}
-        )
-        distances = self.connectivity.distances_from(terminals)
-        self.terminal_distance = dict(zip(terminals, distances))
-        # Forget pump state of stacks that no longer exist.
-        for state in (self.pump_charge, self.pump_current, self.pump_flow):
-            for stack in set(state) - set(self.stacks):
-                del state[stack]
-
-    def _is_conductor(self, cell: tuple[int, int]) -> bool:
-        c, r = cell
-        m = self.materials
-        return 0 <= c < m.cols and 0 <= r < m.rows and bool(m.conductive[c, r])
+        self.stacks = find_stacks(self.materials)
+        for stack in set(self.battery_gain) - set(self.stacks):
+            del self.battery_gain[stack]
 
     def place_charges(self, cols: np.ndarray, rows: np.ndarray, charge: float) -> None:
         """Put a fixed test charge at the centre of each given cell, replacing any there."""
@@ -120,47 +105,52 @@ class World:
         self.fixed_charge = self.fixed_charge[~hit]
         self.fixed_version += 1
 
-    def _spawn_carriers(self, cells: np.ndarray) -> None:
-        n = self.settings.carriers_per_cell
-        corners = np.repeat(np.argwhere(cells), n, axis=0)
-        offsets = np.tile(fill_pattern(n), (int(cells.sum()), 1))
-        positions = corners + offsets + self._jitter(corners.shape)
-        self.particles.add(positions, self.electron_charge, self.electron_mass)
+    def _spawn_carriers(self, counts: np.ndarray) -> None:
+        """Add counts[c, r] electrons to each cell, spread evenly over it."""
+        for count in np.unique(counts[counts > 0]):
+            cells = counts == count
+            corners = np.repeat(np.argwhere(cells), count, axis=0)
+            offsets = np.tile(fill_pattern(int(count)), (int(cells.sum()), 1))
+            positions = corners + offsets + self._jitter(corners.shape)
+            self.particles.add(positions, self.electron_charge, self.electron_mass)
 
     def _jitter(self, shape: tuple[int, ...]) -> np.ndarray:
         return self.rng.uniform(-SPAWN_JITTER, SPAWN_JITTER, size=shape)
 
-    def _remove_carriers(self, removed: np.ndarray, old_labels: np.ndarray) -> None:
-        """Take away the electrons that belonged to the erased cells.
+    def _remove_carriers(self, counts: np.ndarray, old_labels: np.ndarray) -> None:
+        """Take away counts[c, r] electrons for each cell that lost charge density.
 
-        Per island, n electrons leave for each erased cell: first those sitting in
-        erased cells, then the ones nearest to the erased cells. Any electrons
-        still in erased cells after that move to the nearest remaining cell of
-        their old island, or vanish if nothing of it is left.
+        Per island, the electrons leave in this order: those sitting in erased
+        cells, then the rest of those in the cells that lost density, then the
+        ones nearest to those cells. Any electrons still in erased cells after
+        that move to the nearest remaining cell of their old island, or vanish if
+        nothing of it is left.
         """
         p = self.particles
-        n = self.settings.carriers_per_cell
+        conductive = self.materials.conductive
         cell_c, cell_r = p.cells()
         particle_island = old_labels[cell_c, cell_r]
-        in_removed = removed[cell_c, cell_r]
+        lost = counts > 0
+        in_lost = lost[cell_c, cell_r]
+        stranded = ~conductive[cell_c, cell_r]
         keep = np.ones(len(p), dtype=bool)
 
-        for island in np.unique(old_labels[removed]):
-            removed_here = removed & (old_labels == island)
-            quota = n * int(removed_here.sum())
+        for island in np.unique(old_labels[lost]):
+            lost_here = lost & (old_labels == island)
+            quota = int(counts[lost_here].sum())
             members = particle_island == island
-            displaced = np.flatnonzero(members & in_removed)
-
-            keep[displaced[:quota]] = False
-            leftover = displaced[quota:]
-            if len(displaced) < quota:
-                others = np.flatnonzero(members & ~in_removed)
-                centres = np.argwhere(removed_here) + 0.5
+            inside = np.flatnonzero(members & in_lost)
+            inside = inside[np.argsort(~stranded[inside], kind="stable")]  # Erased cells first.
+            keep[inside[:quota]] = False
+            if len(inside) < quota:
+                others = np.flatnonzero(members & ~in_lost)
+                centres = np.argwhere(lost_here) + 0.5
                 distance = _nearest_distance(p.pos[others], centres)
-                keep[others[np.argsort(distance)[: quota - len(displaced)]]] = False
+                keep[others[np.argsort(distance)[: quota - len(inside)]]] = False
 
+            leftover = np.flatnonzero(keep & members & stranded)
             if len(leftover):
-                targets = self.materials.conductive & (old_labels == island)
+                targets = conductive & (old_labels == island)
                 if targets.any():
                     self._move_to_nearest_cell(leftover, targets)
                 else:

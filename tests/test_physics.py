@@ -70,13 +70,13 @@ def test_confine_treats_grid_edge_as_wall():
     assert 0 <= pos[0, 0] < 1
 
 
-def test_confine_treats_batteries_as_walls():
+def test_electrons_pass_through_batteries():
     # Battery at (2, 1) pointing right, wired on both terminals.
     conn = make_connectivity([(1, 1), (3, 1)], battery=((2, 1), Orientation.RIGHT))
     pos, _ = physics.confine(
         np.array([[1.9, 1.5]]), np.array([[2.1, 1.5]]), np.array([[1.0, 0.0]]), conn, 0.0
     )
-    assert np.floor(pos).astype(int).tolist() == [[1, 1]]
+    assert np.floor(pos).astype(int).tolist() == [[2, 1]]
 
 
 def test_random_walk_never_leaves_island():

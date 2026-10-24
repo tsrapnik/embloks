@@ -53,7 +53,7 @@ def test_lorentz_force_steers_electrons_drifting_with_a_current_towards_it():
     assert force[0, 1] < 0
 
 
-def test_battery_current_runs_along_its_stack():
+def test_battery_current_is_carried_by_its_electrons():
     from embloks.world import World
 
     s = Settings()
@@ -61,7 +61,11 @@ def test_battery_current_runs_along_its_stack():
     w.paint(np.array([1, 2, 5, 6]), np.array([2, 2, 2, 2]), Material.CONDUCTOR, resistance=1)
     w.paint(np.array([3, 4]), np.array([2, 2]), Material.BATTERY, emf=2, orientation=Orientation.LEFT)
     [stack] = w.stacks
-    w.pump_flow[stack] = -0.5  # Negative: conventional current from high (right) to low.
-    grid = battery.current_grid(w)
-    assert grid[3, 2].tolist() == [-0.5, 0.0] and grid[4, 2].tolist() == [-0.5, 0.0]
-    assert np.count_nonzero(grid) == 2
+    # Electrons drifting right: conventional current from high (right) to low.
+    w.particles.vel[:] = [1.0, 0.0]
+    current = physics.current_density(w)
+    # The battery's denser electrons carry more current at the same speed.
+    assert current[3, 2, 0] < current[2, 2, 0] < 0 and current[4, 2, 0] < current[5, 2, 0] < 0
+    # Averaged over the stack and its terminals.
+    expected = current[2:6, 2, 0].mean()
+    assert battery.stack_current(w, stack, current) == pytest.approx(expected)

@@ -66,12 +66,19 @@ class Settings:
     # cell_charge * carrier_charge_to_mass. Scaling with carrier density and charge/mass
     # makes a cell of resistance R carry current I = E / R (charge per time): R is in ohms.
     drag_per_resistance: float = 1.0
-    # Internal resistance per battery cell. A perfect battery would have 0; a small value
-    # keeps the pump from overshooting: it moves charge at (EMF - V) / resistance.
+    # Internal resistance per battery cell: the drag on its own electrons. A perfect
+    # battery would have 0; under load its terminal voltage drops by I * resistance.
     battery_resistance: float = 0.1
-    # The battery current the fields see is averaged over only this long: long enough
-    # to smooth single-electron transfers, short enough to follow an AC source.
-    battery_flow_time: float = 0.2
+    # Battery cells hold this many times a wire's charge (ion and electrons). To hold its
+    # voltage a battery must shift some of its electrons towards its - side; with a
+    # dense charge that empties only a small part of it, so it stays steady.
+    battery_density: int = 4
+    # A battery scales its impressed field to deliver its EMF (battery.trim); the gain
+    # corrects its shortfall over roughly this much simulation time, within this range.
+    # Fast enough to cancel the jitter of the few electrons at its faces before the
+    # circuit turns it into a wobbling current (~2x quicker becomes unstable).
+    battery_trim_time: float = 0.25
+    battery_gain_range: tuple[float, float] = (0.5, 4.0)
     # AC frequencies (cycles per time unit) the battery tool steps through with F; 0 is DC.
     ac_frequencies: tuple[float, ...] = (0, 0.02, 0.05, 0.1, 0.2)
     # Displayed currents (wires and batteries) are averaged over roughly this much

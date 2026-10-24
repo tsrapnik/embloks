@@ -411,9 +411,9 @@ class App:
                 f"  ·  {plural(len(w.fixed_charge), 'test charge')}",
             ),
         ]
-        conductive = w.materials.conductive
-        if conductive.any():
-            mean_e = self.status_readout("E in wires", np.hypot(*e_grid[conductive].T).mean())
+        wires = w.materials.kind == Material.CONDUCTOR
+        if wires.any():
+            mean_e = self.status_readout("E in wires", np.hypot(*e_grid[wires].T).mean())
             rows.append(("|E| in wires", f"{mean_e:.4f} (mean)"))
         return rows
 
@@ -425,17 +425,17 @@ class App:
         probes[col, row] = True
         potential = self.potential_grid(probes)
         kind = Material(m.kind[col, row])
+        cell_c, cell_r = w.particles.cells()
+        electrons = plural(np.count_nonzero((cell_c == col) & (cell_r == row)), "electron")
         if kind == Material.CONDUCTOR:
-            cell_c, cell_r = w.particles.cells()
-            electrons = np.count_nonzero((cell_c == col) & (cell_r == row))
             what = (
                 f"conductor  ·  resistance {m.resistance[col, row]:g}"
-                f"  ·  island {w.connectivity.labels[col, row]}  ·  {plural(electrons, 'electron')}"
+                f"  ·  island {w.connectivity.labels[col, row]}  ·  {electrons}"
             )
         elif kind == Material.BATTERY:
             side = Orientation(m.orientation[col, row]).name.lower()
             what = (f"battery  ·  EMF {m.emf[col, row]:g}  ·  "
-                    f"{describe_frequency(m.frequency[col, row])}  ·  + side {side}")
+                    f"{describe_frequency(m.frequency[col, row])}  ·  + side {side}  ·  {electrons}")
         else:
             what = "vacuum"
         fixed_cells = np.floor(w.fixed_pos).astype(int)
@@ -459,7 +459,7 @@ class App:
             ("B", ("", "", "|B|", number(abs(bz), signed=False), describe_b(bz))),
             ("S", (number(sx), number(sy), "|S|", number(np.hypot(sx, sy), signed=False))),
         ]
-        if kind == Material.CONDUCTOR:
+        if m.conductive[col, row]:
             ix, iy = smooth("I", self.current[col, row])
             rows.append(("I", (number(ix), number(iy), "|I|", number(np.hypot(ix, iy), signed=False),
                                "this cell")))
@@ -497,9 +497,11 @@ class App:
         # Report from the stack's own + terminal, so both numbers come out positive.
         sign = 1 if stack.emf >= 0 else -1
         voltage = self.cell_readout("terminal V", sign * (v_high - v_low))
-        current = self.cell_readout("battery I", sign * self.world.pump_current.get(stack, 0.0))
+        current = battery.stack_current(self.world, stack, self.current)
+        current = self.cell_readout("battery I", sign * current)
+        gain = self.world.battery_gain.get(stack, 1.0)
         return (f"{kind} {abs(stack.emf):g}  ·  terminals {number(voltage)} V"
-                f"  ·  current {number(current)}")
+                f"  ·  current {number(current)}  ·  gain {gain:.2f}")
 
     def update_caption(self) -> None:
         state = "paused" if self.paused else "running"

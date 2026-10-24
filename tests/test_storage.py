@@ -36,8 +36,7 @@ def snapshot(app):
         "orientation": m.orientation.copy(), "pos": p.pos.copy(), "vel": p.vel.copy(),
         "charge": p.charge.copy(), "mass": p.mass.copy(), "fixed_pos": w.fixed_pos.copy(),
         "fixed_charge": w.fixed_charge.copy(), "current": app.current.copy(),
-        "pump_current": [w.pump_current.get(s) for s in w.stacks],
-        "pump_charge": [w.pump_charge.get(s, 0.0) for s in w.stacks],
+        "battery_gain": [w.battery_gain.get(s) for s in w.stacks],
         "sim_time": app.sim_time, "sim_speed": app.sim_speed,
     }
 

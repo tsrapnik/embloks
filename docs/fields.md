@@ -157,9 +157,8 @@ condition). At c = 8 and a tick of 1/30 that is 0.38 cell; a faster c is split i
 ### Step 4. Enforce Gauss's law
 
 Steps 1-3 never look at ρ, only at J. In theory that is enough (the charge only changes by
-currents carrying it), but in Embloks charge also jumps without a current: you paint a wire, or
-a battery takes an electron from one terminal and puts it at the other. And the field has to
-start from somewhere. So after every tick E is corrected to satisfy Gauss's law exactly:
+currents carrying it), but in Embloks charge also appears without a current: you paint a wire
+or place a test charge. And the field has to start from somewhere. So after every tick E is corrected to satisfy Gauss's law exactly:
 
     φ = solution of ∇²φ = div E - 4πk ρ;    E ← E - ∇φ
 
@@ -280,18 +279,17 @@ part.
 
 ### Batteries
 
-A battery measures the potential difference between its terminals and moves electrons from one
-to the other at the rate (EMF - V) / R. It reads the potential of step 4 plus the near part's,
-averaged over each cell (at a single point it would jump with every electron passing by):
-electrons crowded at a terminal push harder than the grid potential alone shows.
+A battery cell is a conductor whose electrons also feel an impressed field: EMF per cell towards
+its `+` side, added to E when the electrons are pushed (step 5). It is not part of E itself, so
+the fields never see it, only the charge and current it causes: electrons drift through the
+battery and pile up at its faces, all with real velocities, so steps 1-4 get a smooth J and ρ.
 
-In 2D one electron moved across a battery shifts its terminal voltage by about 2. Moving charge
-at (EMF - V) / R and only then looking at V again would overshoot whenever that shift exceeds
-2R/dt per unit charge, and swing harder every tick (for a single battery cell, R = 0.1, it is
-just over). So the step is implicit: the rate is (EMF - V) / (R + G·dt), where G is how much the
-battery's own transfers move its voltage. G is computed once per painted circuit, by solving for
-the potential of a unit charge moved across each battery (summed over batteries that share
-terminals, which push each other's voltages too). The steady state is unchanged: V = EMF - I·R.
+On its own that delivers 75-90% of the EMF and jitters, because the voltage rests on the few
+electrons at the battery's faces. So each battery also measures what it delivers, V + I·R, and
+integrates the shortfall into a gain on its impressed field (time constant 0.25). V is the
+potential of step 4 plus the near part's, averaged over the wire cells around each terminal (at a
+single point it would jump with every electron passing by): electrons crowded at a terminal push
+harder than the grid potential alone shows. The steady state is V = EMF - I·R.
 
 ## Other techniques
 

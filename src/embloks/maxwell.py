@@ -16,7 +16,7 @@ Every tick E is corrected so that Gauss's law div E = rho / eps0 holds exactly
 (divergence cleaning). The electrostatic part of E is then instantaneous, as in
 the Coulomb gauge, and only the part made by changing currents travels at c.
 That also keeps the field right when charge appears or jumps without a current
-(painting, battery transfers). A margin around the visible grid with gradually
+(painting, test charges). A margin around the visible grid with gradually
 increasing damping absorbs outgoing waves.
 """
 
@@ -176,11 +176,11 @@ class Maxwell:
         out[m : m + values.shape[0], m : m + values.shape[1]] = values
         return out
 
-    def sources(self, world, battery_current: np.ndarray | None = None) -> tuple[np.ndarray, np.ndarray]:
+    def sources(self, world) -> tuple[np.ndarray, np.ndarray]:
         """Smoothed charge (nx, ny) and current (nx, ny, 2) of the world on the full grid.
 
         All charge counts: ions, test charges and electrons; the current is the
-        electrons' q*v plus the batteries' internal currents.
+        electrons' q*v (batteries included: their electrons move like any other).
         """
         s, m, p = self.settings, world.materials, world.particles
         cic = CloudInCell(p.pos, m.cols, m.rows)
@@ -189,8 +189,6 @@ class Maxwell:
         if len(world.fixed_charge):
             values[..., 0] += CloudInCell(world.fixed_pos, m.cols, m.rows).deposit(world.fixed_charge)
         values[..., 1:] = cic.deposit(p.charge[:, None] * p.vel)
-        if battery_current is not None:
-            values[..., 1:] += battery_current
         full = self.smoothed(values)
         return full[..., 0], full[..., 1:]
 
@@ -199,9 +197,9 @@ class Maxwell:
         charge, on its own: the fields themselves are left alone."""
         return self.visible(self._poisson(-4 * np.pi * self.settings.coulomb_k * self.smoothed(rho)))
 
-    def advance(self, world, dt: float, battery_current: np.ndarray) -> None:
+    def advance(self, world, dt: float) -> None:
         """One tick: deposit charge and current from the world, then step the fields."""
-        self.step(*self.sources(world, battery_current), dt)
+        self.step(*self.sources(world), dt)
 
     def gather(self, positions: np.ndarray) -> np.ndarray:
         """Ex, Ey, Bz at particle positions (in visible-grid cell coordinates), (N, 3).

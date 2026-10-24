@@ -13,12 +13,13 @@ _WALL_GAP = 1e-6
 def damping_rates(world, cols: np.ndarray, rows: np.ndarray, settings: Settings) -> np.ndarray:
     """Drag rate (1/time) for particles in the given cells: proportional to resistance.
 
-    Drift speed is v = (q/m) E / rate and current per cell I = cell_charge * v, so
-    rate = R * cell_charge * (q/m) makes I = E / R for any charge density or q/m.
+    Drift speed is v = (q/m) E / rate and current per cell I = density * cell_charge * v,
+    so rate = R * density * cell_charge * (q/m) makes I = E / R for any charge density
+    or q/m.
     """
-    s = settings
+    s, m = settings, world.materials
     per_ohm = s.drag_per_resistance * s.cell_charge * s.carrier_charge_to_mass
-    return world.materials.resistance[cols, rows] * per_ohm
+    return m.resistance[cols, rows] * m.density[cols, rows] * per_ohm
 
 
 def current_density(world) -> np.ndarray:
@@ -93,27 +94,31 @@ def confine(
     return pos, vel
 
 
-def step(world, maxwell: Maxwell, close_range: CloseRange, dt: float, settings: Settings) -> int:
-    """Advance the electrons and the fields by dt.
+def step(
+    world, maxwell: Maxwell, close_range: CloseRange, dt: float, settings: Settings,
+    time: float = 0.0,
+) -> int:
+    """Advance the electrons and the fields by dt from simulation `time`.
 
     Returns the number of substeps used. Substeps keep every move below max_step
     cells, so confine() sees at most one face crossing per axis. Forces are the
-    Lorentz force q (E + v x B) of the fields at each electron, plus the close-range
-    forces. The fields then advance by dt with the new charge and current.
+    Lorentz force q (E + v x B) of the fields at each electron, plus the batteries'
+    impressed field and the close-range forces. The fields then advance by dt
+    with the new charge and current.
     """
     p = world.particles
     s = settings
-    batteries = battery.current_grid(world)
     if len(p) == 0:
-        maxwell.advance(world, dt, batteries)
+        maxwell.advance(world, dt)
         return 0
     speed = np.sqrt((p.vel**2).sum(axis=1)).max()
     substeps = int(np.clip(np.ceil(speed * dt / s.max_step), 1, s.max_substeps))
     h = dt / substeps
-    for _ in range(substeps):
+    for k in range(substeps):
         cols, rows = p.cells()
         fields = maxwell.gather(p.pos)
-        acc = (p.charge / p.mass)[:, None] * lorentz_field(fields[:, :2], p.vel, fields[:, 2])
+        e = fields[:, :2] + battery.impressed_field(world, cols, rows, time + k * h)
+        acc = (p.charge / p.mass)[:, None] * lorentz_field(e, p.vel, fields[:, 2])
         if close_range.enabled:
             acc += close_range.force(world) / p.mass[:, None]
         vel = kick(p.vel, acc, damping_rates(world, cols, rows, s), h)
@@ -122,5 +127,5 @@ def step(world, maxwell: Maxwell, close_range: CloseRange, dt: float, settings: 
         length = np.sqrt((move**2).sum(axis=1))
         move *= np.minimum(1, s.max_step / np.maximum(length, 1e-300))[:, None]
         p.pos, p.vel = confine(p.pos, p.pos + move, vel, world.connectivity, s.wall_restitution)
-    maxwell.advance(world, dt, batteries)
+    maxwell.advance(world, dt)
     return substeps

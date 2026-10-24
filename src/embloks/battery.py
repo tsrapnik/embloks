@@ -1,17 +1,22 @@
-"""Batteries as ideal voltage sources with a small internal resistance.
+"""Batteries as voltage sources with a small internal resistance.
 
-A battery cell blocks electrons on all sides. Battery cells lined up along their
-orientation axis form one *stack*; the conductor cells just beyond its two ends
-are its terminals. Every tick the stack measures the voltage between its
-terminals and moves electrons from the + terminal to the - terminal at
+A battery cell conducts like a wire, with its own ion and electrons, but it also
+pushes its electrons towards its - side with an *impressed field*: a
+non-electrostatic force of EMF per cell along its axis (Griffiths' source force
+f_s, the "resistive voltage source" of FDTD). Electrons drift through the
+battery with drag, so they keep moving until the charge they pile up on the
+terminals cancels that force, which is when V(+) - V(-) = EMF. Under load the
+battery cells' own drag drops part of it: V = EMF - I * R_internal, a textbook
+voltage source. Charge only ever moves continuously, so the current through a
+battery is carried by real electron velocities, like in any wire.
 
-    current = (EMF - V) / internal_resistance
-
-so it holds V = EMF exactly when no current flows, and V = EMF - I * R_internal
-under load: a textbook voltage source. The update is implicit (see pump), so it
-stays stable however strongly the terminal voltage reacts to the moved charge. Physically this stands in for the ions
-that carry charge through a real battery's electrolyte: electrons don't cross
-it, charge is taken from one electrode and delivered at the other.
+Battery cells lined up along their orientation axis form one *stack*; the wire
+cells just beyond its two ends are its terminals. With so few electrons per cell
+the impressed field alone is not a steady source: the voltage rests on the
+handful of electrons at the battery's faces, it comes up short, and it jitters
+as they shift. So each stack measures what it delivers, V + I * R_internal, and
+keeps scaling its impressed field until that equals the EMF (see trim): a
+feedback loop on the force, not on the charge.
 """
 
 from dataclasses import dataclass
@@ -19,10 +24,7 @@ from dataclasses import dataclass
 import numpy as np
 
 from embloks.config import Settings
-from embloks.materials import Material, Materials, Orientation
-
-# Electrons delivered at a terminal land this close to its cell centre.
-_DELIVERY_JITTER = 0.02
+from embloks.materials import ORIENTATION_VECTORS, Material, Materials, Orientation
 
 
 @dataclass(frozen=True)
@@ -52,7 +54,7 @@ class Stack:
         )
 
 
-def find_stacks(materials: Materials, resistance_per_cell: float) -> list[Stack]:
+def find_stacks(materials: Materials) -> list[Stack]:
     """Group battery cells into stacks: runs along their own (shared) axis."""
     kind, orientation, emf, frequency = (
         materials.kind, materials.orientation, materials.emf, materials.frequency
@@ -90,16 +92,18 @@ def find_stacks(materials: Materials, resistance_per_cell: float) -> list[Stack]
         total = sum(signed for signed, _ in sources)
         low = (first[0] - step[0], first[1] - step[1])
         stacks.append(
-            Stack(tuple(cells), low, cell, total, resistance_per_cell * len(cells), sources)
+            Stack(tuple(cells), low, cell, total,
+                  float(sum(materials.resistance[x] for x in cells)), sources)
         )
     return stacks
 
 
 def terminal_potential(world, potential: np.ndarray, cell: tuple[int, int]) -> float | None:
-    """Mean potential over a terminal cell and its 3x3 neighbours in the same island.
+    """Mean potential over a terminal cell and its 3x3 neighbours of wire in the same island.
 
-    None if the terminal isn't a conductor. Averaging damps the noise from
-    individual electrons passing right by the cell centre.
+    None if the terminal isn't a wire. Averaging damps the noise from individual
+    electrons passing right by the cell centre. Battery cells are left out: the
+    potential climbs through them.
     """
     if not _wired(world, cell):
         return None
@@ -107,15 +111,15 @@ def terminal_potential(world, potential: np.ndarray, cell: tuple[int, int]) -> f
     c, r = cell
     c0, c1 = max(c - 1, 0), min(c + 2, m.cols)
     r0, r1 = max(r - 1, 0), min(r + 2, m.rows)
-    same_island = labels[c0:c1, r0:r1] == labels[c, r]
-    return float(potential[c0:c1, r0:r1][same_island].mean())
+    wire = (labels[c0:c1, r0:r1] == labels[c, r]) & (m.kind[c0:c1, r0:r1] == Material.CONDUCTOR)
+    return float(potential[c0:c1, r0:r1][wire].mean())
 
 
 def _wired(world, cell: tuple[int, int]) -> bool:
-    """Whether a terminal cell is a conductor (a battery only works with both wired)."""
+    """Whether a terminal cell is a wire (a battery only works with both wired)."""
     m = world.materials
     c, r = cell
-    return 0 <= c < m.cols and 0 <= r < m.rows and world.connectivity.labels[c, r] >= 0
+    return 0 <= c < m.cols and 0 <= r < m.rows and m.kind[c, r] == Material.CONDUCTOR
 
 
 def probe_cells(world) -> np.ndarray:
@@ -128,111 +132,53 @@ def probe_cells(world) -> np.ndarray:
     return mask
 
 
-def pump(
-    world,
-    potential: np.ndarray,
-    dt: float,
-    settings: Settings,
-    time: float = 0.0,
-    stiffness: dict[Stack, float] | None = None,
-) -> None:
-    """Run every battery stack for dt at simulation `time`, moving electrons between terminals.
+def impressed_field(world, cols: np.ndarray, rows: np.ndarray, time: float) -> np.ndarray:
+    """The batteries' impressed field at time `time` for electrons in the given cells, (N, 2).
 
-    `stiffness` (see terminal_stiffness): how much each stack's terminal voltage
-    rises per unit of charge it moves. With it the current is the backward-Euler
-    step of (EMF - V) / R, i.e. (EMF - V) / (R + stiffness * dt): the same steady
-    state, but no overshoot. Explicitly, a battery whose transfers move its own
-    voltage by more than 2 R / dt per unit charge would swing ever harder between
-    its terminals; in 2D a single electron moves it by ~2-3.
+    EMF per cell towards each battery cell's + side, so the force on an electron
+    (charge < 0) points to its - side; zero outside batteries. AC cells follow
+    EMF * sin(2 pi f t). Over a cell of length 1 it adds EMF to the integral of
+    the field, times the stack's gain (see trim).
     """
-    p = world.particles
-    stiffness = stiffness or {}
+    materials = world.materials
+    gain = np.ones((materials.cols, materials.rows))
+    for stack, value in world.battery_gain.items():
+        gain[tuple(np.array(stack.cells).T)] = value
+    emf = materials.emf[cols, rows] * gain[cols, rows]
+    frequency = materials.frequency[cols, rows]
+    emf = np.where(frequency > 0, emf * np.sin(2 * np.pi * frequency * time), emf)
+    return emf[:, None] * ORIENTATION_VECTORS[materials.orientation[cols, rows]]
+
+
+def stack_current(world, stack: Stack, current: np.ndarray) -> float:
+    """Current through a stack, from low terminal to high, given currents per cell (cols, rows, 2).
+
+    Averaged over the battery cells and its wired terminals: electrons bunch up
+    where they leave the battery, so a single cell over- or under-reads.
+    """
+    direction = np.sign(np.subtract(stack.high, stack.low))
+    cells = [*stack.cells, *(t for t in (stack.low, stack.high) if _wired(world, t))]
+    return float(np.mean([current[cell] @ direction for cell in cells]))
+
+
+def trim(world, potential: np.ndarray, current: np.ndarray, dt: float, settings: Settings,
+         time: float = 0.0) -> None:
+    """Nudge every wired stack's gain so it delivers its EMF: V + I * R_internal = EMF.
+
+    `potential` and `current` (per cell, (cols, rows, 2)) are the present ones. The
+    gain integrates the shortfall over battery_trim_time, weighted by the EMF
+    itself (a least-mean-squares fit), so it works for AC sources as well: near
+    a zero crossing, where the shortfall says little, it hardly moves.
+    """
     for stack in world.stacks:
         v_low = terminal_potential(world, potential, stack.low)
         v_high = terminal_potential(world, potential, stack.high)
-        if v_low is None or v_high is None:
-            for state in (world.pump_charge, world.pump_current, world.pump_flow):
-                state.pop(stack, None)
+        amplitude = sum(abs(emf) for emf, _ in stack.sources)
+        if v_low is None or v_high is None or amplitude == 0:
+            world.battery_gain.pop(stack, None)
             continue
-        resistance = stack.internal_resistance + stiffness.get(stack, 0.0) * dt
-        current = (stack.emf_at(time) - (v_high - v_low)) / resistance
-        # Positive current = conventional current low -> high inside the battery,
-        # i.e. electrons taken at the high terminal and delivered at the low one.
-        owed = world.pump_charge.get(stack, 0.0) + current * dt
-        quantum = settings.cell_charge / settings.carriers_per_cell
-        moved = 0.0
-        while abs(owed) >= quantum:
-            source, target = (stack.high, stack.low) if owed > 0 else (stack.low, stack.high)
-            if not _move_electron(world, source, target):
-                owed = 0.0  # Source side has no electrons left; don't build up a debt.
-                break
-            step = np.sign(owed) * quantum
-            owed -= step
-            moved += step
-        world.pump_charge[stack] = owed
-        # The battery's current is the charge it actually moved, smoothed like wire
-        # currents. (The commanded rate above swings wildly between single-electron
-        # transfers and is not a current.)
-        for state, smoothing in (
-            (world.pump_current, settings.current_smoothing_time),
-            (world.pump_flow, settings.battery_flow_time),
-        ):
-            alpha = min(1.0, dt / smoothing)
-            previous = state.get(stack, 0.0)
-            state[stack] = previous + alpha * (moved / dt - previous)
-        if len(p) == 0:
-            break
-
-
-def terminal_stiffness(world, potential_of) -> dict[Stack, float]:
-    """Rise in each connected stack's terminal voltage per unit charge it moves.
-
-    `potential_of(pos, charge)` gives the potential (cols, rows) of point charges.
-    Stacks that share terminals push each other's voltages too: each stack gets the
-    sum of the magnitudes of its effects on all of them (a Gershgorin bound on the
-    coupled system), so even parallel batteries can't overshoot.
-    """
-    stacks = [st for st in world.stacks if _wired(world, st.low) and _wired(world, st.high)]
-    effect = np.zeros((len(stacks), len(stacks)))
-    for i, stack in enumerate(stacks):
-        # Moving a unit charge from the low terminal to the high one.
-        potential = potential_of(np.array([stack.high, stack.low]) + 0.5, np.array([1.0, -1.0]))
-        for j, other in enumerate(stacks):
-            effect[i, j] = (terminal_potential(world, potential, other.high)
-                            - terminal_potential(world, potential, other.low))
-    return {stack: float(np.abs(effect[i]).sum()) for i, stack in enumerate(stacks)}
-
-
-def current_grid(world) -> np.ndarray:
-    """The batteries' internal currents as a current density, shape (cols, rows, 2).
-
-    Pumped electrons jump across a battery instead of moving through it, so they
-    carry no velocity; this puts the pump current back along the stack's cells,
-    closing the current loop for the magnetic field. It uses the briefly averaged
-    flow, which follows an AC source, not the display-averaged current.
-    """
-    m = world.materials
-    grid = np.zeros((m.cols, m.rows, 2))
-    for stack, current in world.pump_flow.items():
-        # Positive current flows from the low terminal towards the high one.
-        direction = np.sign(np.subtract(stack.high, stack.low))
-        for cell in stack.cells:
-            grid[cell] += current * direction
-    return grid
-
-
-def _move_electron(world, source: tuple[int, int], target: tuple[int, int]) -> bool:
-    """Move the electron nearest the source terminal (along the wire) to the target."""
-    p = world.particles
-    if len(p) == 0:
-        return False
-    cols, rows = p.cells()
-    steps = world.terminal_distance[source][cols, rows]
-    # Path distance first; straight-line distance only breaks ties within a cell.
-    straight = ((p.pos - (np.array(source) + 0.5)) ** 2).sum(axis=1)
-    chosen = np.lexsort((straight, steps))[0]
-    if not np.isfinite(steps[chosen]):
-        return False
-    p.pos[chosen] = np.array(target) + 0.5 + world.rng.uniform(-_DELIVERY_JITTER, _DELIVERY_JITTER, 2)
-    p.vel[chosen] = 0.0
-    return True
+        target = stack.emf_at(time)
+        delivered = v_high - v_low + stack_current(world, stack, current) * stack.internal_resistance
+        gain = world.battery_gain.get(stack, 1.0)
+        gain += dt / settings.battery_trim_time * (target - delivered) * target / amplitude**2
+        world.battery_gain[stack] = float(np.clip(gain, *settings.battery_gain_range))

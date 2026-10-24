@@ -180,7 +180,7 @@ class CloseRange:
         g, _ = radial_tables(*self._params())
         half = square_table(*self._params())[1]
         return _forces(
-            p.pos, p.charge, world.materials.conductive, _square_field(*self._params()), half,
+            p.pos, p.charge, world.materials.density, _square_field(*self._params()), half,
             g, s.electron_cutoff, s.coulomb_k, s.coulomb_k * s.cell_charge,
         )
 
@@ -191,7 +191,7 @@ class CloseRange:
         if key != self._key:
             stencil = _ion_stencil(*self._params())
             self._ions = s.coulomb_k * s.cell_charge * ndimage.correlate(
-                m.conductive.astype(float), stencil, mode="constant"
+                m.density, stencil, mode="constant"
             )
             self._key = key
         return self._ions
@@ -262,14 +262,14 @@ def _bilinear(table: np.ndarray, index: np.ndarray) -> np.ndarray:
 
 
 @njit(cache=True)
-def _forces(pos, charge, conductive, square, half, g, cutoff, k, k_ion):  # pragma: no cover
+def _forces(pos, charge, ions, square, half, g, cutoff, k, k_ion):  # pragma: no cover
     """Close-range forces (N, 2): electron pairs within the cutoff and the ions nearby.
 
     Electrons are sorted by cell, so each one only checks the cells within reach.
     Every pair is handled once, from the electron in the lower-numbered cell.
     """
     n = len(pos)
-    cols, rows = conductive.shape
+    cols, rows = ions.shape
     reach = int(np.ceil(cutoff))
     cutoff2 = cutoff * cutoff
     scale = (len(g) - 2) / cutoff2
@@ -297,7 +297,7 @@ def _forces(pos, charge, conductive, square, half, g, cutoff, k, k_ion):  # prag
         ci, ri = cell[i] // rows, cell[i] % rows
         for c in range(max(ci - reach, 0), min(ci + reach + 1, cols)):
             for r in range(max(ri - reach, 0), min(ri + reach + 1, rows)):
-                if conductive[c, r]:
+                if ions[c, r] > 0:
                     # The ion of cell (c, r): the square table at the offset from its centre.
                     u = (x - c - 0.5 + half) * samples
                     v = (y - r - 0.5 + half) * samples
@@ -309,7 +309,7 @@ def _forces(pos, charge, conductive, square, half, g, cutoff, k, k_ion):  # prag
                                  + square[a + 1, b, axis] * fu * (1 - fv)
                                  + square[a, b + 1, axis] * (1 - fu) * fv
                                  + square[a + 1, b + 1, axis] * fu * fv)
-                        force[i, axis] += k_ion * charge[i] * value
+                        force[i, axis] += k_ion * ions[c, r] * charge[i] * value
                 other = c * rows + r
                 if other < cell[i]:
                     continue

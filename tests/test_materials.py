@@ -22,7 +22,8 @@ def test_paint_battery_sets_emf_and_orientation():
     m.paint(np.array([3]), np.array([0]), Material.BATTERY, resistance=2, emf=7,
             orientation=Orientation.UP)
     assert m.kind[3, 0] == Material.BATTERY
-    assert (m.emf[3, 0], m.orientation[3, 0], m.resistance[3, 0]) == (7, Orientation.UP, 0)
+    assert (m.emf[3, 0], m.orientation[3, 0], m.resistance[3, 0]) == (7, Orientation.UP, 2)
+    assert m.conductive[3, 0]
 
 
 def test_painting_vacuum_clears_properties():

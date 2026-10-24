@@ -2,7 +2,7 @@
 
 A save is a compressed .npz archive: the arrays (materials, electrons, test
 charges, smoothed current) plus a JSON "meta" entry with everything else
-(format version, physics settings, battery pump state, view layers, speed).
+(format version, physics settings, battery gains, view layers, speed).
 """
 
 import json
@@ -12,7 +12,8 @@ import numpy as np
 
 from embloks.world import World
 
-FORMAT_VERSION = 1
+# 2: batteries conduct and hold electrons; gains replace the pump state.
+FORMAT_VERSION = 2
 
 # Settings that shape the saved state. They are restored on load, so a scene
 # behaves the same even if config.py has been edited since it was saved.
@@ -23,6 +24,7 @@ PHYSICS_SETTINGS = (
     "carrier_charge_to_mass",
     "drag_per_resistance",
     "battery_resistance",
+    "battery_density",
     "current_smoothing_time",
     "wall_restitution",
     "max_step",
@@ -31,7 +33,7 @@ PHYSICS_SETTINGS = (
     "speed_of_light",
     "electron_softening",
     "electron_cutoff",
-    "battery_flow_time",
+    "battery_trim_time",
     "smoothing_passes",
     "absorbing_margin",
     "absorbing_strength",
@@ -51,9 +53,7 @@ def save(app, path: Path) -> None:
         "sim_speed": app.sim_speed,
         "settings": {name: getattr(app.settings, name) for name in PHYSICS_SETTINGS},
         # Stacks are found in a fixed order from the materials, so a list lines up on load.
-        "pump_charge": [w.pump_charge.get(stack, 0.0) for stack in w.stacks],
-        "pump_current": [w.pump_current.get(stack) for stack in w.stacks],
-        "pump_flow": [w.pump_flow.get(stack) for stack in w.stacks],
+        "battery_gain": [w.battery_gain.get(stack) for stack in w.stacks],
         "layers": {
             key: {field: getattr(layer, field) for field in LAYER_FIELDS}
             for key, layer in app.layers.items()
@@ -66,6 +66,7 @@ def save(app, path: Path) -> None:
             meta=np.array(json.dumps(meta)),
             kind=m.kind,
             resistance=m.resistance,
+            density=m.density,
             emf=m.emf,
             orientation=m.orientation,
             frequency=m.frequency,
@@ -99,6 +100,7 @@ def load(app, path: Path) -> None:
     m = world.materials
     m.kind[:] = arrays["kind"]
     m.resistance[:] = arrays["resistance"]
+    m.density[:] = arrays["density"]
     m.emf[:] = arrays["emf"]
     m.orientation[:] = arrays["orientation"]
     if "frequency" in arrays:  # Saves from before AC sources have none.
@@ -109,15 +111,9 @@ def load(app, path: Path) -> None:
     p.pos, p.vel, p.charge, p.mass = arrays["pos"], arrays["vel"], arrays["charge"], arrays["mass"]
     world.fixed_pos, world.fixed_charge = arrays["fixed_pos"], arrays["fixed_charge"]
     world.fixed_version += 1
-    flows = meta.get("pump_flow", [None] * len(world.stacks))
-    for stack, owed, current, flow in zip(
-        world.stacks, meta["pump_charge"], meta["pump_current"], flows
-    ):
-        world.pump_charge[stack] = owed
-        if current is not None:
-            world.pump_current[stack] = current
-        if flow is not None:
-            world.pump_flow[stack] = flow
+    for stack, gain in zip(world.stacks, meta["battery_gain"]):
+        if gain is not None:
+            world.battery_gain[stack] = gain
 
     app.install_world(world)
     app.current = arrays["current"]

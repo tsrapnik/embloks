@@ -1,8 +1,8 @@
 from dataclasses import dataclass
 
 import numpy as np
-from scipy.sparse import coo_matrix, csr_matrix
-from scipy.sparse.csgraph import connected_components, shortest_path
+from scipy.sparse import coo_matrix
+from scipy.sparse.csgraph import connected_components
 
 from embloks.materials import Materials
 
@@ -11,9 +11,8 @@ from embloks.materials import Materials
 class Connectivity:
     """Which neighbouring cells conduct into each other, and the resulting islands.
 
-    Conductor cells connect only through shared edges (never corners). Batteries
-    are walls for electrons on all sides; they link islands only by pumping
-    charge between their terminals (see battery.py).
+    Conductive cells (conductors and batteries) connect only through shared
+    edges (never corners).
     """
 
     # open_x[c, r]: cells (c, r) and (c + 1, r) connect. Shape (cols - 1, rows).
@@ -23,20 +22,6 @@ class Connectivity:
     # Island id per cell, 0..count-1, or -1 for non-conductors. Shape (cols, rows).
     labels: np.ndarray
     count: int
-    # Cell adjacency over flat indices (col * rows + row), for path distances.
-    graph: csr_matrix
-
-    def distances_from(self, cells: list[tuple[int, int]]) -> np.ndarray:
-        """Steps along conductors from each given cell to every cell, shape (len, cols, rows).
-
-        Unreachable cells (other islands, non-conductors) get infinity.
-        """
-        cols, rows = self.labels.shape
-        if not cells:
-            return np.empty((0, cols, rows))
-        sources = [c * rows + r for c, r in cells]
-        distance = shortest_path(self.graph, directed=False, unweighted=True, indices=sources)
-        return distance.reshape(len(cells), cols, rows)
 
 
 def compute_connectivity(materials: Materials) -> Connectivity:
@@ -55,4 +40,4 @@ def compute_connectivity(materials: Materials) -> Connectivity:
     # Renumber so islands are 0..count-1 and non-conductors are -1.
     labels = np.full((cols, rows), -1, dtype=np.int64)
     unique, labels[conductive] = np.unique(component[conductive], return_inverse=True)
-    return Connectivity(open_x, open_y, labels, len(unique), graph)
+    return Connectivity(open_x, open_y, labels, len(unique))

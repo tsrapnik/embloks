@@ -31,14 +31,13 @@ def test_diagonal_contact_does_not_connect():
     assert c.labels[1, 1] != c.labels[2, 2]
 
 
-def test_battery_blocks_electrons_on_all_sides():
+def test_battery_conducts_on_all_sides():
     m = Materials(5, 5)
     paint(m, [(2, 2)], Material.BATTERY, orientation=Orientation.RIGHT)
     paint(m, [(1, 2), (3, 2), (2, 1)])
     c = compute_connectivity(m)
-    assert c.labels[2, 2] == -1
-    assert len({c.labels[1, 2], c.labels[3, 2], c.labels[2, 1]}) == 3
-    assert not c.open_x[1, 2] and not c.open_x[2, 2] and not c.open_y[2, 1]
+    assert c.count == 1 and c.labels[2, 2] == c.labels[1, 2] == c.labels[3, 2] == c.labels[2, 1]
+    assert c.open_x[1, 2] and c.open_x[2, 2] and c.open_y[2, 1]
 
 
 def test_open_arrays_have_face_shapes():

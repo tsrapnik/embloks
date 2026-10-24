@@ -38,8 +38,11 @@ class Materials:
         self.cols = cols
         self.rows = rows
         self.kind = np.zeros((cols, rows), dtype=np.int8)
-        # Only meaningful for conductors.
+        # Conductors and batteries (a battery's internal resistance).
         self.resistance = np.zeros((cols, rows))
+        # Charge density of conductive cells, in units of a wire's: ion charge and
+        # electrons per cell are this many times cell_charge and carriers_per_cell.
+        self.density = np.zeros((cols, rows))
         # Only meaningful for batteries.
         self.emf = np.zeros((cols, rows))
         self.orientation = np.zeros((cols, rows), dtype=np.int8)
@@ -50,9 +53,11 @@ class Materials:
 
     @property
     def conductive(self) -> np.ndarray:
-        """Cells that hold a fixed ion and mobile electrons. Batteries don't: they block
-        electrons and move charge between their terminals instead (see battery.py)."""
-        return self.kind == Material.CONDUCTOR
+        """Cells that hold a fixed ion and mobile electrons: conductors and batteries.
+
+        A battery conducts like a wire, but also pushes its electrons towards its
+        - side (see battery.py)."""
+        return (self.kind == Material.CONDUCTOR) | (self.kind == Material.BATTERY)
 
     def paint(
         self,
@@ -63,11 +68,14 @@ class Materials:
         emf: float = 0.0,
         orientation: Orientation = Orientation.RIGHT,
         frequency: float = 0.0,
+        density: float = 1.0,
     ) -> None:
         """Set the given cells to `material`, clearing properties it doesn't use."""
         self.kind[cols, rows] = material
-        self.resistance[cols, rows] = resistance if material == Material.CONDUCTOR else 0.0
         is_battery = material == Material.BATTERY
+        is_conductive = material == Material.CONDUCTOR or is_battery
+        self.resistance[cols, rows] = resistance if is_conductive else 0.0
+        self.density[cols, rows] = density if is_conductive else 0.0
         self.emf[cols, rows] = emf if is_battery else 0.0
         self.orientation[cols, rows] = orientation if is_battery else 0
         self.frequency[cols, rows] = frequency if is_battery else 0.0
