@@ -24,7 +24,7 @@ import numpy as np
 from scipy import fft
 
 from embloks.config import Settings
-from embloks.fields import CloudInCell
+from embloks.fields import CloudInCell, ion_charge
 
 
 class Maxwell:
@@ -150,7 +150,7 @@ class Maxwell:
     def charge(self, world, cic: CloudInCell) -> np.ndarray:
         """All charge (ions, test charges, electrons) on the full node grid."""
         s, m, p = self.settings, world.materials, world.particles
-        rho = m.conductive * s.cell_charge + cic.deposit(p.charge)
+        rho = ion_charge(m, s.cell_charge) + cic.deposit(p.charge)
         if len(world.fixed_charge):
             rho = rho + CloudInCell(world.fixed_pos, m.cols, m.rows).deposit(world.fixed_charge)
         return self.embed(rho)

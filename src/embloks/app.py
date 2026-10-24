@@ -315,15 +315,22 @@ class App:
         else:
             self.show_message("Instant fields: Coulomb and Biot-Savart, no induction or waves")
 
-    def potential_grid(self) -> np.ndarray:
-        """Electric potential at the cell centres in the current field mode."""
-        if self.maxwell is not None:
-            return self.maxwell.visible_potential()
-        return self.electric.potential_grid(self.world)
+    def potential_grid(self, where: np.ndarray | None = None) -> np.ndarray:
+        """Electric potential at the cell centres in the current field mode.
+
+        Only exact on the cells in `where`, if given (see ElectricField.potential_grid).
+        """
+        if self.maxwell is None:
+            return self.electric.potential_grid(self.world, where)
+        potential = self.maxwell.visible_potential()
+        if self.electric.close_range.enabled:
+            potential = potential + self.electric.close_range.potential(self.world, where)
+        return potential
 
     def step(self, dt: float) -> None:
         s = self.settings
-        battery.pump(self.world, self.potential_grid(), dt, s, self.sim_time)
+        probes = battery.probe_cells(self.world)
+        battery.pump(self.world, self.potential_grid(probes), dt, s, self.sim_time)
         physics.step(self.world, self.electric, dt, s, self.maxwell)
         alpha = min(1.0, dt / s.current_smoothing_time)
         self.current += alpha * (physics.current_density(self.world) - self.current)
@@ -451,7 +458,9 @@ class App:
         self, col: int, row: int, e_grid: np.ndarray, b_grid: np.ndarray, s_grid: np.ndarray
     ) -> list[tuple[str, str]]:
         w, m = self.world, self.world.materials
-        potential = self.potential_grid()
+        probes = battery.probe_cells(w)
+        probes[col, row] = True
+        potential = self.potential_grid(probes)
         kind = Material(m.kind[col, row])
         if kind == Material.CONDUCTOR:
             cell_c, cell_r = w.particles.cells()

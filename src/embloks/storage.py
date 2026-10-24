@@ -31,6 +31,8 @@ PHYSICS_SETTINGS = (
     "speed_of_light",
     "conductor_softening",
     "test_charge_softening",
+    "electron_softening",
+    "electron_cutoff",
     "battery_flow_time",
     "dynamic_fields",
     "absorbing_margin",

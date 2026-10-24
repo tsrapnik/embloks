@@ -6,7 +6,7 @@ class Particles:
 
     Positions are in cell units: cell (col, row) spans [col, col + 1) x [row, row + 1),
     with y pointing down like the screen. Fixed ions are not stored here; every
-    conductive cell implicitly has one at its centre (see World).
+    conductive cell implicitly has one spread over it (see World).
     """
 
     def __init__(self):

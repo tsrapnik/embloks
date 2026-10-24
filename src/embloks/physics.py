@@ -130,6 +130,8 @@ def step(
             )
             fields = cic.gather(grids)
         acc = (p.charge / p.mass)[:, None] * lorentz_field(fields[:, :2], p.vel, fields[:, 2])
+        if electric.close_range.enabled:
+            acc += electric.close_range.force(world) / p.mass[:, None]
         vel = kick(p.vel, acc, damping_rates(world, cols, rows, s), h)
         move = vel * h
         # Safety net if velocity jumped within this substep: never move further than max_step.

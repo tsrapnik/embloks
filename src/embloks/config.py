@@ -43,7 +43,7 @@ class Settings:
     max_brush_radius: int = 10
 
     # Conductors shade from bright (lowest resistance) to dark (highest).
-    conductor_color_low_r: tuple[int, int, int] = (235, 160, 90)
+    conductor_color_low_r: tuple[int, int, int] = (235, 90, 90)
     conductor_color_high_r: tuple[int, int, int] = (95, 60, 40)
     battery_color: tuple[int, int, int] = (70, 80, 70)
     battery_plus_color: tuple[int, int, int] = (220, 60, 60)
@@ -107,6 +107,13 @@ class Settings:
     # neutral cell leaks a ~1/r^4 field that adds up across a conductor.
     conductor_softening: float = 0.8
     test_charge_softening: float = 0.5
+    # Within electron_cutoff (cells), electrons repel as charges softened by only
+    # electron_softening, and ions attract them as charge spread evenly over their cells
+    # (fields.CloseRange). The grid alone smears each electron over ~a cell, too coarse
+    # to keep them apart: they stacked up on a wire's centre line. With this they fill
+    # it evenly. Short range only (cost grows with cutoff^2); 0 turns it off.
+    electron_softening: float = 0.25
+    electron_cutoff: float = 1.0
 
     # Fixed test charges (in units of e) painted with the charge tool.
     test_charge_values: tuple[float, ...] = (-10, -5, -2, -1, -0.5, 0.5, 1, 2, 5, 10)

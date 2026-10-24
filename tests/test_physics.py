@@ -1,7 +1,7 @@
 import numpy as np
 import pytest
 
-from embloks import physics
+from embloks import physics, scenes
 from embloks.config import Settings
 from embloks.connectivity import compute_connectivity
 from embloks.fields import ElectricField
@@ -109,7 +109,8 @@ def run(world, seconds):
 
 
 def test_neutral_conductor_stays_quiet(block_world):
-    run(block_world, 2)
+    # Electrons spawn spread over their cells; the outermost ones settle in ~4 time units.
+    run(block_world, 5)
     speeds = np.hypot(*block_world.particles.vel.T)
     assert speeds.max() < 0.02
 
@@ -142,3 +143,34 @@ def test_step_without_particles_does_nothing():
     s = Settings()
     w = World(5, 5, s)
     assert physics.step(w, ElectricField(s), s.dt, s) == 0
+
+
+def test_electrons_spread_over_a_thin_wire_instead_of_stacking():
+    """Regression: electrons used to collapse onto the centre line, in exact stacks."""
+    s = Settings()
+    w = World(20, 14, s, rng=np.random.default_rng(0))
+    w.paint(*scenes.outline(3, 16, 3, 10), Material.CONDUCTOR, resistance=1)
+    p = w.particles
+    p.pos = np.floor(p.pos) + 0.5 + w.rng.uniform(-0.02, 0.02, p.pos.shape)  # All stacked.
+    run(w, 5)
+    cols, rows = p.cells()
+    across = np.where(np.isin(cols, (3, 16)), p.pos[:, 0], p.pos[:, 1]) % 1 - 0.5
+    corner = np.isin(cols, (3, 16)) & np.isin(rows, (3, 10))
+    # Filling the width evenly gives a mean distance of 0.25 from the centre line.
+    assert np.abs(across[~corner]).mean() > 0.2
+    gaps = np.hypot(*(p.pos[:, None] - p.pos[None]).transpose(2, 0, 1)) + 9 * np.eye(len(p))
+    assert gaps.min() > 0.05
+
+
+def test_close_range_force_pushes_stacked_electrons_apart():
+    s = Settings()
+    w = World(10, 10, s)
+    w.paint(np.array([4, 5]), np.array([4, 4]), Material.CONDUCTOR, resistance=1)
+    w.particles.pos[:] = [5.0, 4.5]
+    w.particles.pos[0, 0] -= 0.05
+    w.particles.pos[1, 0] += 0.05
+    force = ElectricField(s).close_range.force(w)
+    # The pair repels (and momentum is conserved between electrons)...
+    assert force[0, 0] < -0.5 and force[1, 0] > 0.5
+    # ...while the ions of the two cells draw the rest of them back symmetrically.
+    assert force.sum(axis=0) == pytest.approx([0.0, 0.0], abs=1e-9)

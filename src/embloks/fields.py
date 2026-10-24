@@ -1,7 +1,8 @@
 from functools import lru_cache
 
 import numpy as np
-from scipy import fft
+from scipy import fft, ndimage
+from scipy.spatial import cKDTree
 
 from embloks.config import Settings
 
@@ -90,6 +91,199 @@ def biot_savart(
         cross = currents[None, :, 0] * dy - currents[None, :, 1] * dx
         bz[start : start + rows_per_block] = (cross / (r2 * np.sqrt(r2))).sum(axis=1)
     return k / c**2 * bz
+
+
+def _close_potential(r2: np.ndarray, softening: float, grid_softening: float, cutoff: float) -> np.ndarray:
+    """Close-range correction potential of a unit charge at squared distances r2.
+
+    Coulomb softened by `softening` minus Coulomb softened by `grid_softening`
+    (what the grid fields already apply), times a taper (1 - r^2 / cutoff^2)^2
+    that takes it and its slope smoothly to zero at the cutoff.
+    """
+    taper = np.maximum(1 - r2 / cutoff**2, 0.0)
+    return (1 / np.sqrt(r2 + softening**2) - 1 / np.sqrt(r2 + grid_softening**2)) * taper * taper
+
+
+def _close_field(d: np.ndarray, softening: float, grid_softening: float, cutoff: float) -> np.ndarray:
+    """Close-range correction field (..., 2) of a unit charge at offsets d: -grad _close_potential."""
+    r2 = d[..., 0] ** 2 + d[..., 1] ** 2
+    taper = np.maximum(1 - r2 / cutoff**2, 0.0)
+    a = 1 / np.sqrt(r2 + softening**2)
+    b = 1 / np.sqrt(r2 + grid_softening**2)
+    return ((a * a * a - b * b * b) * taper * taper + 4 * (a - b) * taper / cutoff**2)[..., None] * d
+
+
+def _close_range(d: np.ndarray, softening: float, grid_softening: float, cutoff: float) -> np.ndarray:
+    """Close-range potential and field together (..., 3), for tabulating."""
+    potential = _close_potential((d * d).sum(axis=-1), softening, grid_softening, cutoff)
+    return np.concatenate([potential[..., None], _close_field(d, softening, grid_softening, cutoff)], axis=-1)
+
+
+# Samples per cell (per axis) of the close-range table of a uniform square.
+_SQUARE_SAMPLES = 32
+
+
+@lru_cache(maxsize=8)
+def _square_table(softening: float, grid_softening: float, cutoff: float) -> tuple[np.ndarray, float]:
+    """_close_range of a unit charge spread evenly over a cell, tabulated.
+
+    Returns the table (n, n, 3) over offsets from the cell centre in [-half, half]^2
+    (spacing 1 / _SQUARE_SAMPLES), and `half`. The square is integrated with the
+    midpoint rule: a sliding sum of the point-charge values along each axis.
+    """
+    m = _SQUARE_SAMPLES
+    h = 1 / m
+    half = float(np.ceil(cutoff) + 1)
+    # Point values at offsets z_k = -half - 0.5 + (k + 0.5) h; table entry i
+    # (offset -half + i h) sums z_i .. z_(i + m - 1) along each axis.
+    z = -half - 0.5 + (np.arange(int(round((2 * half + 1) * m))) + 0.5) * h
+    zx, zy = np.meshgrid(z, z, indexing="ij")
+    point = _close_range(np.stack([zx, zy], axis=-1), softening, grid_softening, cutoff)
+    total = np.pad(point.cumsum(axis=0).cumsum(axis=1), ((1, 0), (1, 0), (0, 0)))
+    n = len(z) - m + 1
+    table = total[m:m + n, m:m + n] - total[:n, m:m + n] - total[m:m + n, :n] + total[:n, :n]
+    return table * h**2, half
+
+
+class CloseRange:
+    """Close-range forces on electrons and their potential, on top of the grid fields.
+
+    The grid smears every charge over about a cell, so two electrons barely repel
+    within a cell and can sit on top of each other. Within electron_cutoff this
+    corrects that (see _close_range): electrons repel as compact charges
+    (electron_softening), and ions attract them as charge spread evenly over
+    their cells. Electrons evenly filling a conductor then feel no net
+    close-range force, as in a real metal; crowding or gaps get pushed back.
+
+    The ions' part only depends on which cells nearby conduct. It is tabulated
+    over a cell once per distinct neighbourhood, until the materials change.
+    """
+
+    def __init__(self, settings: Settings):
+        self.settings = settings
+        self._key = None
+
+    @property
+    def enabled(self) -> bool:
+        return self.settings.electron_cutoff > 0
+
+    def _softenings(self) -> tuple[float, float, float]:
+        s = self.settings
+        return s.electron_softening, s.conductor_softening, s.electron_cutoff
+
+    def _update_ions(self, world) -> None:
+        s, m = self.settings, world.materials
+        key = (id(world), m.version, s.electron_softening, s.conductor_softening,
+               s.electron_cutoff, s.coulomb_k, s.cell_charge)
+        if key == self._key:
+            return
+        square, half = _square_table(*self._softenings())
+        n = _SQUARE_SAMPLES
+        reach = int(np.ceil(s.electron_cutoff))
+        padded = np.pad(m.conductive, reach)
+        offsets = [(dc, dr) for dc in range(-reach, reach + 1) for dr in range(-reach, reach + 1)]
+        # Each cell's neighbourhood as a bit pattern: one bit per conducting neighbour.
+        pattern = np.zeros((m.cols, m.rows), dtype=np.int64)
+        for bit, (dc, dr) in enumerate(offsets):
+            near = padded[reach + dc : reach + dc + m.cols, reach + dr : reach + dr + m.rows]
+            pattern |= near.astype(np.int64) << bit
+        unique, self._pattern = np.unique(pattern, return_inverse=True)
+        self._pattern = self._pattern.reshape(m.cols, m.rows)
+        # Table rows j = 0..n sample the cell at x = j / n; offset x - 0.5 - dc from that
+        # neighbour's centre is square-table row j + (half - 0.5 - dc) n.
+        self._tables = np.zeros((len(unique), n + 1, n + 1, 3))
+        for bit, (dc, dr) in enumerate(offsets):
+            a, b = int(round((half - 0.5 - dc) * n)), int(round((half - 0.5 - dr) * n))
+            has = (unique >> bit) & 1 == 1
+            self._tables[has] += square[a : a + n + 1, b : b + n + 1]
+        self._tables *= s.coulomb_k * s.cell_charge
+        # Ion potential averaged over each cell (trapezoid rule on the table samples).
+        weights = np.ones(n + 1)
+        weights[[0, -1]] = 0.5
+        weights /= n
+        cell_mean = np.einsum("uij,i,j->u", self._tables[..., 0], weights, weights)
+        self._ion_potential = cell_mean[self._pattern]
+        self._square, self._half = square, half
+        self._key = key
+
+    def _ions(self, world, points: np.ndarray) -> np.ndarray:
+        """Close-range potential and field (N, 3) of all ions at points inside the grid."""
+        self._update_ions(world)
+        cell = np.floor(points).astype(np.int64)
+        table = self._pattern[cell[:, 0], cell[:, 1]]
+        return _lookup(self._tables, table, (points - cell) * _SQUARE_SAMPLES)
+
+    def force(self, world) -> np.ndarray:
+        """Close-range force on each electron (N, 2). Opposite and equal between
+        electrons, so momentum is conserved."""
+        s, p = self.settings, world.particles
+        force = p.charge[:, None] * self._ions(world, p.pos)[:, 1:]
+        if len(p) < 2:
+            return force
+        tree = cKDTree(p.pos, balanced_tree=False, compact_nodes=False)
+        pairs = tree.query_pairs(s.electron_cutoff, output_type="ndarray")
+        if len(pairs) == 0:
+            return force
+        i, j = pairs[:, 0], pairs[:, 1]
+        field = _close_field(p.pos[i] - p.pos[j], *self._softenings())
+        pair = s.coulomb_k * (p.charge[i] * p.charge[j])[:, None] * field
+        for axis in (0, 1):
+            force[:, axis] += np.bincount(i, pair[:, axis], minlength=len(p))
+            force[:, axis] -= np.bincount(j, pair[:, axis], minlength=len(p))
+        return force
+
+    def potential(self, world, where: np.ndarray | None = None) -> np.ndarray:
+        """Close-range part of the potential, averaged over each cell (cols, rows).
+
+        The potential whose gradient `force` adds. Batteries need it: they hold the
+        potential difference between their terminals, and electrons crowded at the
+        - terminal push harder than the grid potential alone shows. Averaged over
+        the cell rather than read at its centre, which is sharp: it would jump with
+        every electron passing close by.
+
+        `where` (cols, rows) limits the work to the cells that will be read; the
+        result is zero elsewhere.
+        """
+        s, m, p = self.settings, world.materials, world.particles
+        self._update_ions(world)
+        reach = int(np.ceil(s.electron_cutoff))
+        pos = p.pos
+        charge = p.charge
+        if where is not None:
+            # Only electrons within reach of a requested cell contribute to it.
+            near = ndimage.binary_dilation(where, np.ones((2 * reach + 1,) * 2, dtype=bool))
+            cols, rows = p.cells()
+            pos, charge = pos[near[cols, rows]], charge[near[cols, rows]]
+        steps = np.arange(-reach, reach + 1)
+        offsets = np.stack(np.meshgrid(steps, steps, indexing="ij"), axis=-1).reshape(-1, 1, 2)
+        cells = np.floor(pos).astype(np.int64) + offsets
+        c, r = cells[..., 0], cells[..., 1]
+        hit = (c >= 0) & (c < m.cols) & (r >= 0) & (r < m.rows)
+        # An electron's potential averaged over a cell is that of the cell, spread
+        # evenly, at the electron: the square table.
+        d = (pos - (cells + 0.5))[hit]
+        index = (d + self._half) * _SQUARE_SAMPLES
+        values = _lookup(self._square[None], np.zeros(len(d), dtype=np.int64), index)[:, 0]
+        electrons = np.bincount(
+            (c * m.rows + r)[hit], (values * np.broadcast_to(charge, c.shape)[hit]),
+            minlength=m.cols * m.rows,
+        )
+        potential = self._ion_potential + s.coulomb_k * electrons.reshape(m.cols, m.rows)
+        return potential if where is None else np.where(where, potential, 0.0)
+
+
+def _lookup(tables: np.ndarray, which: np.ndarray, index: np.ndarray) -> np.ndarray:
+    """Bilinear interpolation in tables[which] (n, n, d) at fractional indices (N, 2)."""
+    i = np.clip(np.floor(index).astype(np.int64), 0, tables.shape[1] - 2)
+    f = index - i
+    fx, fy = f[:, 0, None], f[:, 1, None]
+    ix, iy = i[:, 0], i[:, 1]
+    return (
+        tables[which, ix, iy] * (1 - fx) * (1 - fy)
+        + tables[which, ix + 1, iy] * fx * (1 - fy)
+        + tables[which, ix, iy + 1] * (1 - fx) * fy
+        + tables[which, ix + 1, iy + 1] * fx * fy
+    )
 
 
 class GridKernel:
@@ -194,13 +388,38 @@ def interpolate(grid: np.ndarray, positions: np.ndarray) -> np.ndarray:
     return CloudInCell(positions, *grid.shape[:2]).gather(grid)
 
 
+def spread_over_cells(values: np.ndarray) -> np.ndarray:
+    """Deposit each cell's value (cols, rows) as if spread evenly over its cell.
+
+    This is the cloud-in-cell deposit of a uniform square: per axis 3/4 stays on
+    the cell's centre and 1/8 goes to each neighbour. Ions are deposited this way,
+    so electrons evenly filling their cells cancel them, rather than only electrons
+    stacked on the centre. Parts beyond the grid edge stay on the edge cell, as in
+    CloudInCell, so the sum is conserved.
+    """
+    for axis in (0, 1):
+        a = np.moveaxis(values, axis, 0)
+        out = 0.75 * a
+        out[1:] += a[:-1] / 8
+        out[:-1] += a[1:] / 8
+        out[0] += a[0] / 8
+        out[-1] += a[-1] / 8
+        values = np.moveaxis(out, 0, axis)
+    return values
+
+
+def ion_charge(materials, cell_charge: float) -> np.ndarray:
+    """Charge of the fixed ions on the cell centres (cols, rows): spread over their cells."""
+    return spread_over_cells(materials.conductive * cell_charge)
+
+
 class ElectricField:
     """Electric field of a World: ions, electrons and fixed test charges.
 
     `at` is exact (direct sums). `grid` is the fast version, used for display and
-    for forces: all charges go through FFT convolution on the grid. Ions and test
-    charges sit on cell centres, so their part is exact and cached until they
-    change. Electrons are deposited onto cell centres, which blurs their field
+    for forces: all charges go through FFT convolution on the grid. Ions (spread
+    over their cells, see ion_charge) and test charges sit on cell centres, so their
+    part is exact and cached until they change. Electrons are deposited onto cell centres, which blurs their field
     within about a cell (on the scale of the softening anyway).
     """
 
@@ -209,6 +428,7 @@ class ElectricField:
         self._static_key = None
         self._static_grid: np.ndarray | None = None
         self._static_potential: np.ndarray | None = None
+        self.close_range = CloseRange(settings)
 
     def _kernel(self, world, softening: float) -> GridKernel:
         m = world.materials
@@ -221,7 +441,7 @@ class ElectricField:
             return
         s, m = self.settings, world.materials
         ion_kernel = self._kernel(world, s.conductor_softening)
-        ions = m.conductive * s.cell_charge
+        ions = ion_charge(m, s.cell_charge)
         fixed_kernel = self._kernel(world, s.test_charge_softening)
         fixed = deposit(world.fixed_pos, world.fixed_charge, m.cols, m.rows)
         self._static_grid = ion_kernel.field(ions) + fixed_kernel.field(fixed)
@@ -250,11 +470,18 @@ class ElectricField:
         """Total field at every cell centre, shape (cols, rows, 2)."""
         return self.static_grid(world) + self.electron_grid(world, cic)
 
-    def potential_grid(self, world) -> np.ndarray:
-        """Total potential at every cell centre, shape (cols, rows); zero far away."""
+    def potential_grid(self, world, where: np.ndarray | None = None) -> np.ndarray:
+        """Total potential at every cell centre, shape (cols, rows); zero far away.
+
+        The close-range part (see CloseRange.potential) is only added on the cells
+        in `where`, if given.
+        """
         self._update_static(world)
         kernel = self._kernel(world, self.settings.conductor_softening)
-        return self._static_potential + kernel.potential(self._electron_charge(world, None))
+        potential = self._static_potential + kernel.potential(self._electron_charge(world, None))
+        if self.close_range.enabled:
+            potential = potential + self.close_range.potential(world, where)
+        return potential
 
     def at(self, world, points: np.ndarray) -> np.ndarray:
         """Exact total field at arbitrary points (M, 2), all sources summed directly."""
@@ -266,8 +493,9 @@ class ElectricField:
 
     def _sum_sources(self, world, points: np.ndarray, kernel) -> np.ndarray:
         s = self.settings
-        ions = np.argwhere(world.materials.conductive) + 0.5
-        ion_charges = np.full(len(ions), s.cell_charge)
+        ion_grid = ion_charge(world.materials, s.cell_charge)
+        ions = np.argwhere(ion_grid != 0) + 0.5
+        ion_charges = ion_grid[ion_grid != 0]
         p = world.particles
         return (
             kernel(points, ions, ion_charges, s.conductor_softening, s.coulomb_k)

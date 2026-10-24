@@ -2,7 +2,9 @@ import numpy as np
 import pytest
 
 from embloks.config import Settings
-from embloks.fields import ElectricField, GridKernel, coulomb_field, deposit, interpolate
+from embloks.fields import (
+    ElectricField, GridKernel, coulomb_field, deposit, interpolate, spread_over_cells,
+)
 from embloks.materials import Material
 from embloks.world import World
 
@@ -81,9 +83,10 @@ def test_world_grid_field_matches_exact_field_away_from_electrons(world):
     approx_without_electrons = grid - electric.electron_grid(world)
     assert np.allclose(approx_without_electrons.reshape(-1, 2), exact_without_electrons)
     # Electrons are blurred, so compare only cells a few cells away from the wire.
+    # Spread over their cells, their blur adds a small quadrupole per cell (~1e-3 here).
     far = np.array([[0, 0], [7, 12], [19, 1], [15, 10]])
     exact = electric.at(world, far + 0.5)
-    assert np.allclose(grid[far[:, 0], far[:, 1]], exact, rtol=0.05, atol=1e-3)
+    assert np.allclose(grid[far[:, 0], far[:, 1]], exact, rtol=0.05, atol=3e-3)
 
 
 def test_static_cache_is_refreshed_after_painting_and_placing_charges(world):
@@ -133,13 +136,25 @@ def test_place_charges_replaces_and_remove_clears(world):
     assert np.allclose(world.fixed_pos, [[2.5, 1.5]])
 
 
-def test_neutral_conductor_with_centred_electrons_has_no_field(world):
+def test_neutral_conductor_with_evenly_spread_electrons_has_no_grid_field(world):
+    """Ions are spread over their cells, so electrons evenly filling them cancel them."""
+    world.settings.carriers_per_cell = 16
     world.paint(np.repeat(np.arange(4, 16), 6), np.tile(np.arange(4, 10), 12),
                 Material.CONDUCTOR, resistance=1)
-    n = world.settings.carriers_per_cell
-    world.particles.pos = np.repeat(np.argwhere(world.materials.conductive), n, axis=0) + 0.5
-    electric = ElectricField(world.settings)
-    centres = np.argwhere(np.ones((20, 14), dtype=bool)) + 0.5
-    assert np.abs(electric.at(world, centres)).max() < 1e-12
-    assert np.abs(electric.grid(world)).max() < 1e-12
+    sub = (np.arange(4) + 0.5) / 4
+    pattern = np.stack(np.meshgrid(sub, sub, indexing="ij"), axis=-1).reshape(-1, 2)
+    cells = np.argwhere(world.materials.conductive)
+    world.particles.pos = (cells[:, None, :] + pattern[None]).reshape(-1, 2)
+    assert np.abs(ElectricField(world.settings).grid(world)).max() < 1e-12
 
+
+def test_spread_over_cells_conserves_charge():
+    values = np.zeros((5, 4))
+    values[2, 1] = 64.0
+    values[0, 3] = 8.0  # Corner cell: the parts beyond the edge stay on it.
+    spread = spread_over_cells(values)
+    assert spread.sum() == pytest.approx(72.0)
+    assert spread[2, 1] == pytest.approx(36.0)  # (3/4)^2
+    assert spread[1, 1] == pytest.approx(6.0)  # 3/4 * 1/8
+    assert spread[1, 0] == pytest.approx(1.0)  # (1/8)^2
+    assert spread[0, 3] == pytest.approx(8.0 * (7 / 8) ** 2)

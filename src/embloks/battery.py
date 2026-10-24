@@ -110,6 +110,16 @@ def terminal_potential(world, potential: np.ndarray, cell: tuple[int, int]) -> f
     return float(potential[c0:c1, r0:r1][same_island].mean())
 
 
+def probe_cells(world) -> np.ndarray:
+    """Mask (cols, rows) of the cells whose potential terminal_potential reads."""
+    m = world.materials
+    mask = np.zeros((m.cols, m.rows), dtype=bool)
+    for stack in world.stacks:
+        for c, r in (stack.low, stack.high):
+            mask[max(c - 1, 0) : c + 2, max(r - 1, 0) : r + 2] = True
+    return mask
+
+
 def pump(world, potential: np.ndarray, dt: float, settings: Settings, time: float = 0.0) -> None:
     """Run every battery stack for dt at simulation `time`, moving electrons between terminals."""
     p = world.particles

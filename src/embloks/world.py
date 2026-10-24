@@ -6,17 +6,16 @@ from embloks.connectivity import compute_connectivity
 from embloks.materials import Material, Materials, Orientation
 from embloks.particles import Particles
 
-# Electrons spawn on their cell's ion, offset by at most this much (cells). On the
-# ion they cancel it exactly, so a fresh conductor is field-free; the small jitter
-# lets several electrons in one cell separate instead of moving as one stack.
+# Electrons spawn spread over their cell (see fill_pattern), offset by at most this
+# much (cells), so a fresh conductor is not a perfect lattice.
 SPAWN_JITTER = 0.02
 
 
 class World:
     """Materials plus the charges they carry, kept consistent while painting.
 
-    Every conductor cell holds one fixed ion of charge +cell_charge at its centre
-    and, when neutral, `carriers_per_cell` electrons of charge -cell_charge/n each.
+    Every conductor cell holds one fixed ion of charge +cell_charge, spread evenly
+    over the cell (see fields.ion_charge), and, when neutral, `carriers_per_cell` electrons of charge -cell_charge/n each.
     """
 
     def __init__(self, cols: int, rows: int, settings: Settings, rng: np.random.Generator | None = None):
@@ -123,8 +122,10 @@ class World:
 
     def _spawn_carriers(self, cells: np.ndarray) -> None:
         n = self.settings.carriers_per_cell
-        centres = np.repeat(np.argwhere(cells), n, axis=0) + 0.5
-        self.particles.add(centres + self._jitter(centres.shape), self.electron_charge, self.electron_mass)
+        corners = np.repeat(np.argwhere(cells), n, axis=0)
+        offsets = np.tile(fill_pattern(n), (int(cells.sum()), 1))
+        positions = corners + offsets + self._jitter(corners.shape)
+        self.particles.add(positions, self.electron_charge, self.electron_mass)
 
     def _jitter(self, shape: tuple[int, ...]) -> np.ndarray:
         return self.rng.uniform(-SPAWN_JITTER, SPAWN_JITTER, size=shape)
@@ -174,6 +175,20 @@ class World:
         nearest = centres[np.argmin(d2, axis=1)]
         p.pos[indices] = nearest + self._jitter(nearest.shape)
         p.vel[indices] = 0.0
+
+
+def fill_pattern(n: int) -> np.ndarray:
+    """n points spread evenly over a unit cell (n, 2): a rank-1 lattice.
+
+    Columns and rows are each n evenly spaced values, so per axis the points
+    deposit 3/4 on the cell centre and 1/8 on each neighbour, like the ion
+    (fields.spread_over_cells): a freshly painted conductor is almost field-free.
+    """
+    i = np.arange(n)
+    # Step through the rows by a generator coprime to n near n / golden ratio^2,
+    # so successive points land far apart.
+    step = min((g for g in range(1, n + 1) if np.gcd(g, n) == 1), key=lambda g: abs(g - 0.382 * n))
+    return np.stack([(i + 0.5) / n, ((i * step) % n + 0.5) / n], axis=-1)
 
 
 def _nearest_distance(points: np.ndarray, centres: np.ndarray) -> np.ndarray:
