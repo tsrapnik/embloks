@@ -100,9 +100,10 @@ class Settings:
     # are ~ (v/c)^2 times electric ones, so a lower c makes them stronger. Electrons
     # drift at ~0.01-1, far below this.
     speed_of_light: float = 2.0
-    # Softening length (cells) of ions and electrons. Ions are smeared over ~their cell,
+    # Softening length (cells) of ions and electrons on the grid: each charge is a
+    # Gaussian cloud with potential erf(r / eps) / r. Ions are smeared over ~their cell,
     # so neighbouring ions form a smooth positive background electrons can roam over
-    # (a lattice ripple of roughly exp(-2 pi * 0.8) ~ 1%). Electrons must use the same
+    # (a lattice ripple of roughly exp(-(pi * 0.8)^2) ~ 0.2%). Electrons must use the same
     # value: softened charges only cancel exactly when smeared alike, otherwise every
     # neutral cell leaks a ~1/r^4 field that adds up across a conductor.
     conductor_softening: float = 0.8
@@ -111,9 +112,11 @@ class Settings:
     # electron_softening, and ions attract them as charge spread evenly over their cells
     # (fields.CloseRange). The grid alone smears each electron over ~a cell, too coarse
     # to keep them apart: they stacked up on a wire's centre line. With this they fill
-    # it evenly. Short range only (cost grows with cutoff^2); 0 turns it off.
+    # it evenly. The correction is the erfc remainder of the grid's erf split, which falls
+    # below 1% of the force at 2.5 conductor_softening, where it is cut off. Cost grows
+    # with cutoff^2; 0 turns it off.
     electron_softening: float = 0.25
-    electron_cutoff: float = 1.0
+    electron_cutoff: float = 2.0
 
     # Fixed test charges (in units of e) painted with the charge tool.
     test_charge_values: tuple[float, ...] = (-10, -5, -2, -1, -0.5, 0.5, 1, 2, 5, 10)

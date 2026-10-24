@@ -16,7 +16,8 @@ from scipy.spatial import cKDTree
 
 from embloks import battery, physics, scenes
 from embloks.config import Settings
-from embloks.fields import CloudInCell, ElectricField, GridKernel, _close_field, coulomb_field
+from embloks.fields import (CloudInCell, ElectricField, GridKernel, _close_field, coulomb_field,
+                            field_kernels, softened_inv_r3)
 from embloks.materials import Material
 from embloks.world import World
 
@@ -30,13 +31,18 @@ SPREAD = np.array([1 / 8, 3 / 4, 1 / 8])
 plt.rcParams.update({"figure.facecolor": "white", "savefig.facecolor": "white", "font.size": 10})
 
 
-def plummer(x, y, cx, cy, eps):
+def gaussian(x, y, cx, cy, eps):
     """In-plane slice of the density of a unit charge smeared with softening eps.
 
-    This (Plummer) density is exactly the one whose field is k q r / (r^2 + eps^2)^1.5.
+    This Gaussian density is exactly the one whose potential is k q erf(r / eps) / r.
     """
     r2 = (x - cx) ** 2 + (y - cy) ** 2
-    return 3 / (4 * np.pi * eps**3) * (1 + r2 / eps**2) ** -2.5
+    return np.exp(-r2 / eps**2) / (np.pi**1.5 * eps**3)
+
+
+def softened_force(r, eps):
+    """Repulsion between two unit charges at distance r, one smeared with softening eps."""
+    return r * softened_inv_r3(r**2, eps)
 
 
 def cell_lines(ax, lo=-1.5, hi=1.5):
@@ -65,7 +71,7 @@ def ion_figure():
     outline_cell(axs[0])
     axs[0].set_title("1. Grid: share of the ion's charge\nput on each cell centre")
     # (b) Long range: those shares, each smeared with conductor_softening.
-    grid = sum(stencil[i, j] * plummer(x, y, i - 1, j - 1, EPS) for i in range(3) for j in range(3))
+    grid = sum(stencil[i, j] * gaussian(x, y, i - 1, j - 1, EPS) for i in range(3) for j in range(3))
     im = axs[1].imshow(grid, extent=EXTENT, cmap="inferno", vmin=0)
     cell_lines(axs[1])
     outline_cell(axs[1])
@@ -89,14 +95,14 @@ def electron_figure():
     positions = [((0.0, 0.0), "at the cell centre"), ((0.25, 0.0), "0.25 cell off centre"),
                  ((0.5, 0.0), "on a cell edge"), ((0.5, 0.5), "on a cell corner")]
     fig, axs = plt.subplots(2, 4, figsize=(17, 8.4))
-    top = plummer(0, 0, 0, 0, EPS)
+    top = gaussian(0, 0, 0, 0, EPS)
     for k, ((px, py), label) in enumerate(positions):
         # Long range: cloud-in-cell shares on the 4 nearest centres, each smeared like the ions.
         cic = CloudInCell(np.array([[px + 2.5, py + 2.5]]), 5, 5)
         grid = np.zeros_like(x)
         for index, weight in zip(cic.index[:, 0], cic.weight[:, 0]):
             c, r = divmod(int(index), 5)
-            grid += weight * plummer(x, y, c - 2, r - 2, EPS)
+            grid += weight * gaussian(x, y, c - 2, r - 2, EPS)
         ax = axs[0, k]
         ax.imshow(grid, extent=EXTENT, cmap="viridis", vmin=0, vmax=top)
         cell_lines(ax)
@@ -104,12 +110,12 @@ def electron_figure():
         ax.set_title(f"Electron {label}")
         # Close range: a compact ball at the electron itself.
         ax = axs[1, k]
-        ax.imshow(plummer(x, y, px, py, EPS_E), extent=EXTENT, cmap="viridis", vmin=0,
-                  vmax=plummer(0, 0, 0, 0, EPS_E))
+        ax.imshow(gaussian(x, y, px, py, EPS_E), extent=EXTENT, cmap="viridis", vmin=0,
+                  vmax=gaussian(0, 0, 0, 0, EPS_E))
         cell_lines(ax)
         ax.plot(px, py, "r+", ms=14, mew=2)
     axs[0, 0].set_ylabel(f"Long range (grid fields)\ncloud-in-cell, softening {EPS}", fontsize=11)
-    axs[1, 0].set_ylabel(f"Close range (within {S.electron_cutoff:g} cell)\nsoftening {EPS_E}",
+    axs[1, 0].set_ylabel(f"Close range (within {S.electron_cutoff:g} cells)\nsoftening {EPS_E}",
                          fontsize=11)
     fig.suptitle("One electron (-0.5 e); red +: its position. The colour scale of each row is "
                  "fixed; the close-range ball is ~30x denser at its peak.", fontsize=12)
@@ -145,14 +151,14 @@ def run_scene(cutoff, seed=0):
 
 def behaviour_figure():
     q2 = (S.cell_charge / S.carriers_per_cell) ** 2
-    seps = np.linspace(0, 2, 81)
+    seps = np.linspace(0, 2.5, 101)
     grid = pair_force(seps)
     close = q2 * _close_field(np.stack([seps, 0 * seps], -1), EPS_E, EPS, S.electron_cutoff)[:, 0]
     fig = plt.figure(figsize=(16, 5.6))
     ax = fig.add_subplot(1, 3, 1)
     ax.plot(seps, grid, label="grid fields only")
     ax.plot(seps, grid + close, label="grid + close range (used)")
-    ax.plot(seps, q2 * seps / (seps**2 + EPS_E**2) ** 1.5, ":", label=f"Coulomb, softening {EPS_E}")
+    ax.plot(seps, q2 * softened_force(seps, EPS_E), ":", label=f"Coulomb, softening {EPS_E}")
     ax.set_xlabel("distance between the electrons (cells)")
     ax.set_ylabel("repulsion")
     ax.set_ylim(0, 2.2)
@@ -213,13 +219,13 @@ def spectrum(a):
 
 def p3m_split_figure():
     r = np.linspace(0, 2.5, 501)
-    compact = r / (r**2 + EPS_E**2) ** 1.5
-    smooth = r / (r**2 + EPS**2) ** 1.5
+    compact = softened_force(r, EPS_E)
+    smooth = softened_force(r, EPS)
     close = _close_field(np.stack([r, 0 * r], -1), EPS_E, EPS, S.electron_cutoff)[:, 0]
     fig, ax = plt.subplots(figsize=(8, 4.6))
     ax.plot(r, compact, "k:", lw=2, label=f"wanted: compact electrons (softening {EPS_E})")
-    ax.plot(r, smooth, lw=2, label=f"PM, far part on the grid (softening {EPS})")
-    ax.plot(r, close, lw=2, label="PP, near part pair by pair (difference, tapered)")
+    ax.plot(r, smooth, lw=2, label=f"PM, far part on the grid: erf (softening {EPS})")
+    ax.plot(r, close, lw=2, label="PP, near part pair by pair: erfc remainder")
     ax.plot(r, smooth + close, "--", lw=1.5, label="PM + PP (used)")
     ax.axvline(S.electron_cutoff, color="0.5", lw=1)
     ax.text(S.electron_cutoff + 0.03, 6.5, "cutoff", color="0.4")
@@ -272,21 +278,33 @@ def p3m_assign_figure(cic, rho):
 
 def p3m_kernel_figure(kernel_x, shape):
     n = kernel_x.shape[0] // 2
-    fig, axs = plt.subplots(1, 2, figsize=(12, 5.4))
+    fig, axs = plt.subplots(1, 3, figsize=(18, 5.4))
     lim = np.abs(kernel_x).max()
     im = axs[0].imshow(kernel_x.T, extent=(-n - 0.5, n + 0.5, n + 0.5, -n - 0.5), cmap="PuOr",
                        vmin=-lim, vmax=lim)
     fig.colorbar(im, ax=axs[0], shrink=0.85)
     axs[0].set_title("The kernel Kx in real space: the x field of one\n"
-                     f"unit charge (softening {EPS}) at the centre")
+                     f"unit charge (softening {EPS}), with the correction")
     axs[0].set_xlabel("x offset from the charge (cells)")
     axs[0].set_ylabel("y offset (cells)")
-    im = axs[1].imshow(spectrum(np.fft.fft2(kernel_x, s=shape)).T, cmap="magma", norm=SQRT,
+    # Along the x axis: the softened field itself, and the corrected kernel samples.
+    r = np.linspace(0, 6, 301)
+    offsets = np.arange(0, 7)
+    axs[1].plot(r, softened_force(r, EPS), color="0.4", label=f"softened field (erf, softening {EPS})")
+    axs[1].plot(offsets, kernel_x[n + offsets, n], "o-", color="#d06020",
+                label="Kx with the assignment correction")
+    axs[1].axhline(0, color="0.7", lw=0.8)
+    axs[1].set_xlabel("x offset from the charge (cells)")
+    axs[1].set_ylabel("field")
+    axs[1].legend()
+    axs[1].set_title("Along the x axis: the correction boosts the nearest\n"
+                     "nodes to make up for cloud-in-cell smearing")
+    im = axs[2].imshow(spectrum(np.fft.fft2(kernel_x, s=shape)).T, cmap="magma", norm=SQRT,
                        extent=(-shape[0] / 2, shape[0] / 2, shape[1] / 2, -shape[1] / 2))
-    fig.colorbar(im, ax=axs[1], shrink=0.85)
-    axs[1].set_title("Its spectrum |K̂x|: the filter.\nZero at kx = 0, strongest at low k")
-    axs[1].set_xlabel("kx (cycles per padded grid)")
-    axs[1].set_ylabel("ky")
+    fig.colorbar(im, ax=axs[2], shrink=0.85)
+    axs[2].set_title("Its spectrum |K̂x|: the filter.\nZero at kx = 0, strongest at low k")
+    axs[2].set_xlabel("kx (cycles per padded grid)")
+    axs[2].set_ylabel("ky")
     fig.tight_layout()
     fig.savefig(OUT / "p3m_kernel.png", dpi=80)
 
@@ -357,7 +375,7 @@ def p3m_force_figure(pm, pp, exact):
     # Arrow length grows with the square root of the force: the close pair pushes
     # 20x harder than the far field, which would otherwise hide everything else.
     for ax, force, colour, title in ((axs[0], pm, "#2a7ab0", "Step 5. PM force: E read back at each electron"),
-                                     (axs[1], pp, "#d06020", f"Step 6. PP force: only pairs closer than {S.electron_cutoff:g} cell")):
+                                     (axs[1], pp, "#d06020", f"Step 6. PP force: only pairs closer than {S.electron_cutoff:g} cells")):
         grid_axes(ax, lines=False)
         ax.grid(alpha=0.3)
         ax.scatter(EXAMPLE[:, 0], EXAMPLE[:, 1], s=50, c="#1f5fd0", zorder=3)
@@ -390,9 +408,7 @@ def p3m_figures():
     rho = cic.deposit(q)
     kernel = GridKernel(N, N, EPS)
     # The same real-space kernel GridKernel transforms (offsets -(N-1) .. N-1).
-    dx, dy = np.meshgrid(np.arange(-(N - 1), N), np.arange(-(N - 1), N), indexing="ij")
-    kernel_x = dx / (dx**2 + dy**2 + EPS**2) ** 1.5
-    kernel_y = dy / (dx**2 + dy**2 + EPS**2) ** 1.5
+    kernel_x, kernel_y, _ = field_kernels(N, N, EPS)
     p3m_split_figure()
     p3m_assign_figure(cic, rho)
     p3m_kernel_figure(kernel_x, kernel.shape)

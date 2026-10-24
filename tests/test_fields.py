@@ -3,7 +3,8 @@ import pytest
 
 from embloks.config import Settings
 from embloks.fields import (
-    ElectricField, GridKernel, coulomb_field, deposit, interpolate, spread_over_cells,
+    CloudInCell, ElectricField, GridKernel, coulomb_field, deposit, grid_kernel, interpolate,
+    ion_charge, spread_over_cells,
 )
 from embloks.materials import Material
 from embloks.world import World
@@ -49,11 +50,32 @@ def test_superposition_is_linear():
 def test_grid_fft_field_matches_direct_sum():
     rng = np.random.default_rng(2)
     charge = rng.normal(size=(9, 6)) * (rng.uniform(size=(9, 6)) < 0.4)
-    via_fft = GridKernel(9, 6, softening=0.8).field(charge)
+    via_fft = GridKernel(9, 6, softening=0.8, corrected=False).field(charge)
     cells = np.argwhere(np.ones_like(charge, dtype=bool))
     sources = np.argwhere(charge != 0)
     direct = coulomb_field(cells + 0.5, sources + 0.5, charge[charge != 0], 0.8)
     assert np.allclose(via_fft.reshape(-1, 2), direct, atol=1e-10)
+
+
+def test_assignment_correction_restores_the_short_range_grid_force():
+    """Cloud-in-cell weakens the grid force between nearby charges; the optimal
+    influence function brings it back towards the softened Coulomb force."""
+    rng = np.random.default_rng(2)
+    n = 24
+    errors = {}
+    for corrected in (False, True):
+        kernel = GridKernel(n, n, softening=0.8, corrected=corrected)
+        error = []
+        for _ in range(50):
+            a = rng.uniform(10, 14, 2)
+            angle = rng.uniform(0, 2 * np.pi)
+            b = a + 0.75 * np.array([np.cos(angle), np.sin(angle)])
+            field = kernel.field(CloudInCell(a[None], n, n).deposit(np.array([1.0])))
+            force = CloudInCell(b[None], n, n).gather(field)[0]
+            exact = coulomb_field(b[None], a[None], np.array([1.0]), 0.8)[0]
+            error.append(np.linalg.norm(force - exact) / np.linalg.norm(exact))
+        errors[corrected] = np.mean(error)
+    assert errors[True] < 0.6 * errors[False]
 
 
 @pytest.fixture
@@ -75,13 +97,19 @@ def test_world_grid_field_matches_exact_field_away_from_electrons(world):
     world.place_charges(np.array([15]), np.array([10]), -2)
     electric = ElectricField(world.settings)
     grid = electric.grid(world)
-    # Ion and test charge parts are exact everywhere.
+    # Test charges sit on cell centres and use the uncorrected kernel: exact everywhere.
     centres = np.argwhere(np.ones((20, 14), dtype=bool)) + 0.5
-    exact_without_electrons = electric.at(world, centres) - coulomb_field(
-        centres, world.particles.pos, world.particles.charge, world.settings.conductor_softening
-    )
-    approx_without_electrons = grid - electric.electron_grid(world)
-    assert np.allclose(approx_without_electrons.reshape(-1, 2), exact_without_electrons)
+    s = world.settings
+    exact_fixed = coulomb_field(centres, world.fixed_pos, world.fixed_charge, s.test_charge_softening)
+    ions = ion_charge(world.materials, s.cell_charge)
+    ion_grid = grid_kernel(20, 14, s.conductor_softening).field(ions)
+    fixed_grid = grid - electric.electron_grid(world) - ion_grid
+    assert np.allclose(fixed_grid.reshape(-1, 2), exact_fixed)
+    # The assignment correction changes the ions' field on the cell centres nearby
+    # (it is tuned for cloud-in-cell read-back); further out it approaches the direct sum.
+    exact_ions = coulomb_field(centres, np.argwhere(ions != 0) + 0.5, ions[ions != 0], s.conductor_softening)
+    away = np.abs(centres[:, 1] - 5.5) >= 5
+    assert np.allclose(ion_grid.reshape(-1, 2)[away], exact_ions[away], rtol=0.02, atol=1e-3)
     # Electrons are blurred, so compare only cells a few cells away from the wire.
     # Spread over their cells, their blur adds a small quadrupole per cell (~1e-3 here).
     far = np.array([[0, 0], [7, 12], [19, 1], [15, 10]])

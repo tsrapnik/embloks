@@ -23,13 +23,14 @@ departs from the textbook version.
 ## The problem: brute force is too slow
 
 The direct way: for each electron, loop over all other charges and add up Coulomb's law. Embloks
-uses a *softened* Coulomb force, which treats each charge as a small cloud of size ε instead of a
-point:
+uses a *softened* Coulomb law, which treats each charge as a small Gaussian cloud of size ε
+(density ∝ exp(-r²/ε²)) instead of a point. Its potential is
 
-    F = k·q₁·q₂·r / (r² + ε²)^1.5
+    V = k·q · erf(r/ε) / r
 
-Far away (r ≫ ε) this is plain Coulomb. Up close it stays finite instead of blowing up, and it is
-zero at r = 0, so a charge never pushes itself.
+Far away (r ≫ ε) this is plain Coulomb: erf(r/ε) is within 0.05% of 1 beyond 2.5 ε. Up close it
+stays finite instead of blowing up, and the force is zero at r = 0, so a charge never pushes
+itself.
 
 This loop costs N² pair evaluations per step. At 76,000 electrons (a 200 × 160 grid, 30% wire)
 that is 6·10⁹ pairs, many times per second. Far too slow.
@@ -52,23 +53,28 @@ of all charges is the sum of the fields of the parts, however they were computed
 makes the grid step possible: it handles the far part of *all* pairs at once by computing the field
 of the whole (smeared) charge distribution in one go.
 
-The textbook split (from Ewald summation) is `1/r = erfc(αr)/r + erf(αr)/r`, which is exact for any
-α since erf + erfc = 1. Embloks splits differently, with two softening lengths:
+Embloks uses the textbook split from Ewald summation, `1/r = erf(αr)/r + erfc(αr)/r`, which is
+exact for any α since erf + erfc = 1:
 
-- **Far part:** Coulomb softened by ε = 0.8 cell (`conductor_softening`). Every charge is a cloud
-  about a cell wide: smooth enough for a grid whose spacing is one cell.
-- **Near part:** the *difference* between Coulomb softened by ε = 0.25 (`electron_softening`, the
-  compact electrons we actually want) and the ε = 0.8 far part, times a taper `(1 - r²/r_c²)²` that
-  brings it smoothly to zero at r_c = 1 cell (`electron_cutoff`).
+- **Far part:** `erf(αr)/r` with α = 1/0.8 cell: Coulomb softened by ε = 0.8 cell
+  (`conductor_softening`). Every charge is a Gaussian cloud about a cell wide: smooth enough for a
+  grid whose spacing is one cell.
+- **Near part:** the rest, `erfc(αr)/r`. It falls off like a Gaussian, so it is simply dropped
+  beyond the cutoff r_c = 2 cells (`electron_cutoff`), where it is 0.6% of the force (α·r_c = 2.5,
+  a usual textbook choice).
+
+One change to the textbook: Embloks' electrons are not points but compact clouds of size 0.25
+(`electron_softening`), so that two electrons on the same spot don't feel an infinite force. Their
+interaction is `erf(r/0.25)/r`, and the near part is what that adds to the far part:
+`erfc(r/0.8)/r - erfc(r/0.25)/r`. For point electrons (size 0) the second term vanishes and this is
+the textbook erfc.
 
 ![The force between two electrons versus distance: the compact Coulomb force we want, the smooth
 far part, the near part and their sum](images/p3m_split.png)
 
-Unlike erf/erfc, this split is not exact. Inside the cutoff, far + near follows the compact force
-(the taper makes it overshoot by up to 17% below 0.2 cell). Beyond the cutoff, charges interact as
-the wider ε = 0.8 clouds: half the compact force just past 1 cell, 18% less at 2 cells, 5% less at
-4 cells. That is intended: the compact shape only matters when electrons crowd together, and
-further out every charge is part of a smooth crowd anyway.
+Inside the cutoff, far + near is exactly the compact force. Beyond it, charges interact as the
+ε = 0.8 clouds, which are within 0.6% of the compact force there and indistinguishable from it
+past 2.5 cells.
 
 | Method      | Short range       | Long range | Cost per step          |
 |-------------|-------------------|------------|------------------------|
@@ -136,30 +142,46 @@ frequency.
 
 ### Step 3. Multiply by the kernel's spectrum (the filter)
 
-In textbook P3M the filter is written down directly in frequency space: Poisson's equation
-∇²φ = -ρ/ε₀ becomes φ̂ = ρ̂ / (ε₀k²), times a Gaussian low-pass (the erf split), times a correction
-for the smearing of step 1. The field then follows as Ê = -ik·φ̂.
+For a periodic box, textbook P3M writes the filter down directly in frequency space: the Fourier
+transform of the far part's Green's function (for 3D charges in 3D, 4π/k² times the Gaussian
+low-pass exp(-k²/4α²) of the erf split), with the field following as Ê = -ik·φ̂. The canvas here
+is not periodic, so Embloks uses the textbook method for *isolated* systems instead (Hockney &
+Eastwood, *Computer Simulation Using Particles*): sample the Green's function in real space on the
+doubled grid of step 2, and FFT it. Kx is the x component of the field of one unit charge with
+softening 0.8 (the erf far part), at every node offset from -(n - 1) to n - 1:
 
-Embloks builds the kernel in real space instead. Kx is the x component of the field of one unit
-charge with softening 0.8, sampled at every node offset from -(n - 1) to n - 1:
+    Kx(dx, dy) = k·dx · (erf(r/ε) - 2r/(√π·ε)·exp(-r²/ε²)) / r³ + ΔKx      (Ky likewise with dy)
 
-    Kx(dx, dy) = k·dx / (dx² + dy² + ε²)^1.5      (Ky likewise with dy)
+with r² = dx² + dy² (the first term is 0 at r = 0). Sampling in real space also gets the geometry
+right: charges here are 3D point charges confined to a plane, with a 1/r potential, whose 2D
+transform is 2π/|k| (times erfc(k/2α) for the far part), not the 1/k² of charges in 3D.
 
-Its FFT K̂x is computed once per grid size and cached. It contains the three textbook ingredients
-at once: the Green's function of Poisson's equation, the low-pass (the softening), and the
-derivative (the kernel is a *field*, not a potential). Sampling the real-space kernel also gets the
-geometry right for free: charges here are 3D point charges confined to a plane, with a 1/r² force,
-and the canvas is not periodic.
+ΔKx is the textbook **assignment correction**. Cloud-in-cell smears every charge twice, once when
+it is put on the grid (step 1) and once when the field is read back (step 5), which weakens the
+grid force between charges a cell or two apart. Hockney & Eastwood's *optimal influence function*
+compensates for this, including the aliasing of frequencies above the grid's resolution, so that
+the grid force is as close as possible to the erf force, averaged over where the charges sit in
+their cells. In frequency space it is
 
-![The kernel Kx in real space and the magnitude of its spectrum](images/p3m_kernel.png)
+    K̂_opt(k) = Σₘ Û(kₘ)² R̂(kₘ) / (Σₘ Û(kₘ)²)²,      kₘ = k + 2π·m
+
+with Û the cloud-in-cell window (sinc² per axis), R̂ the transform of the erf field and m running
+over the aliases. ΔKx is the difference between K̂_opt and the spectrum of the sampled erf field,
+transformed back to real space: a short correction that mostly boosts the nearest nodes (middle
+panel below). It still leaves Kx antisymmetric, so step 5's guarantees hold. The potential kernel
+gets the same correction. Kx is computed once per grid size and cached, with its FFT K̂x.
+
+![The kernel Kx in real space, along the x axis compared with the erf field, and the magnitude of
+its spectrum](images/p3m_kernel.png)
 
 The spectrum shows what the filter does:
 
 - **Zero on the column kx = 0.** Kx is odd in x, like a derivative (-ikx in frequency space): a
   pattern that doesn't vary along x has no field along x. This also drops the k = 0 term, the
   total charge, which on its own would give a uniform field.
-- **Strong at low |k|, weak at high |k|.** The 1/k² of Poisson's equation amplifies large-scale
-  patterns: that is the long range of Coulomb's law. The softening damps the fine detail.
+- **Strong at low |k|, weak at high |k|.** The 1/|k| of a point charge's potential in a plane
+  amplifies large-scale patterns: that is the long range of Coulomb's law. The Gaussian low-pass
+  of the erf split damps the fine detail.
 
 Panel **c** of the step 2 figure is the product ρ̂·K̂x: the noisy spectrum with its high
 frequencies and its kx = 0 column suppressed. The same is done with K̂y for Ey.
@@ -175,7 +197,7 @@ block is kept; the rest is the padding. Another inverse FFT, of ρ̂·K̂y, give
 The field points towards the electrons (they are negative), and is smooth: around the merged
 pair 1 and 2 it looks like the field of a single charge. One step costs one forward FFT and two
 inverse FFTs (plus one more for the potential, which the batteries need, with the kernel
-k / √(r² + ε²)). In the code this is `GridKernel` in [fields.py](../src/embloks/fields.py).
+k·erf(r/ε)/r plus its correction). In the code this is `GridKernel` in [fields.py](../src/embloks/fields.py).
 
 ### Step 5. Read the field back at the electrons
 
@@ -198,11 +220,13 @@ their PM forces mostly come from the other electrons.
 Pairs closer than the cutoff are found with a k-d tree (no need to check all N² pairs), and the
 near force of the split above is added to each, equal and opposite. In the example only electrons
 1 and 2 are that close (middle panel); they now repel strongly. In the code this is
-`CloseRange.force` in [fields.py](../src/embloks/fields.py).
+`CloseRange.force` in [fields.py](../src/embloks/fields.py). Evaluating erf and exp for every pair
+is slow, so, as is usual in P3M codes, the near force is read from a table over r² instead
+(accurate to about 10⁻⁵ of its peak).
 
-In a conductor with 8 electrons per cell, each electron has about 25 neighbours within 1 cell, so
-the PP step roughly doubles the cost of a physics step. Large solid conductors cost more, because
-the number of close pairs grows with them.
+In a conductor with 8 electrons per cell, each electron has about 100 neighbours within 2 cells,
+so the PP step takes most of the time of a physics step. Large solid conductors cost more,
+because the number of close pairs grows with them.
 
 ## Adding up
 
@@ -214,12 +238,12 @@ take their step (`physics.step` in [physics.py](../src/embloks/physics.py)). Nex
 starts again from step 1.
 
 The right panel of the force figure compares P3M with brute force (direct Coulomb sums with the
-compact softening of 0.25). Electrons far from others are within 1-6%. The close pair comes out 13%
-low. The split itself is accurate at their distance (within 2%), but the PP step assumes the grid
-delivers the smooth ε = 0.8 force between them, and the grid delivers less: on top of the
-softening, cloud-in-cell spreads both electrons over the same few nodes (compare *grid fields
-only* with the softened curve in the [electron spacing figure](#what-the-electrons-look-like)).
-That is harmless: what matters is that close electrons repel strongly.
+compact softening of 0.25). Electrons far from others are within 0.5-5%. The close pair comes out
+6% low. The split itself is exact at their distance, but the PP step assumes the grid delivers
+the smooth ε = 0.8 force between them. The assignment correction gets the grid close to that on
+average over positions, not for every pair: here both electrons share the same few nodes. Without
+the correction the pair came out 10% low; on random clouds of electrons the correction halves the
+rms force error (to 3.5-6%, depending on density).
 
 ## Ions, test charges and the magnetic field
 
@@ -234,7 +258,7 @@ handled with the same two parts:
   their field is computed once and cached.
 - **PP:** within the cutoff, an ion is the evenly spread charge itself (3), minus its grid part.
   This only depends on which cells around an electron conduct, so it is tabulated once per
-  distinct 3 × 3 neighbourhood when you paint, and read back with one lookup per electron.
+  distinct 5 × 5 neighbourhood when you paint, and read back with one lookup per electron.
 
 ![A conductor cell's ion: its shares on the grid, the smeared far part and the uniform near
 part](images/ion.png)
@@ -267,7 +291,9 @@ terminal push harder than the grid potential alone shows.
 ### Test charges
 
 Test charges sit on cell centres and use their own kernel, with softening 0.5
-(`test_charge_softening`). Like the ions, their field is cached until you paint.
+(`test_charge_softening`). Sitting exactly on nodes, they aren't smeared when put on the grid, so
+their kernel has no assignment correction and their field on the nodes is exact. Like the ions,
+their field is cached until you paint.
 
 ### Magnetic field
 
@@ -279,11 +305,11 @@ is computed in frequency space: two forward FFTs, the two products combined, and
 
 | | Textbook P3M | Embloks |
 |---|---|---|
-| Boundaries | periodic box | isolated canvas: zero-padding to 2n - 1 |
-| Split | erf / erfc, exact | two softenings plus a taper, approximate |
-| Filter | influence function in k-space: 1/k², Gaussian, assignment correction | FFT of the sampled real-space field kernel, computed once |
-| Assignment correction | divides out the smearing of step 1 | none: the ε = 0.8 smearing is wider anyway |
-| Geometry | 3D charges in 3D (or 2D in 2D) | 3D point charges in a plane: 1/r² forces |
+| Boundaries | periodic box | isolated canvas: zero-padding to 2n - 1 (Hockney's method) |
+| Split | erf / erfc, exact | erf / erfc, exact; electrons are compact clouds (size 0.25), not points |
+| Filter | influence function written in k-space: 4π/k², Gaussian | FFT of the real-space erf kernel sampled on the doubled grid, computed once |
+| Assignment correction | optimal influence function | the same, added to the sampled kernel; not for test charges, which sit on nodes |
+| Geometry | 3D charges in 3D (or 2D in 2D) | 3D point charges in a plane: 2π/\|k\| potential, 1/r² forces |
 | Fixed charges | - | ions and test charges cached until painted |
 
 ## Other techniques

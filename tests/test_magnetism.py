@@ -29,7 +29,7 @@ def test_moving_charge_field_magnitude_and_no_field_along_motion():
 def test_grid_curl_matches_direct_biot_savart():
     rng = np.random.default_rng(4)
     current = rng.normal(size=(9, 7, 2)) * (rng.uniform(size=(9, 7, 1)) < 0.4)
-    via_fft = GridKernel(9, 7, softening=0.8).curl(current) / 2.0**2
+    via_fft = GridKernel(9, 7, softening=0.8, corrected=False).curl(current) / 2.0**2
     cells = np.argwhere(np.ones((9, 7), dtype=bool))
     direct = biot_savart(cells + 0.5, cells + 0.5, current.reshape(-1, 2), 0.8, c=2.0)
     assert np.allclose(via_fft.reshape(-1), direct, atol=1e-10)

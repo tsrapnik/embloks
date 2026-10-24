@@ -1,13 +1,46 @@
 from functools import lru_cache
 
 import numpy as np
-from scipy import fft, ndimage
+from scipy import fft, ndimage, special
 from scipy.spatial import cKDTree
 
 from embloks.config import Settings
 
 # Bound on (points x sources) per vectorised block, to keep memory use flat.
 _BLOCK_SIZE = 1_000_000
+
+# Below this r / softening, the softened kernels use their Taylor series: the
+# closed forms divide by r and, for the field, lose digits to cancellation.
+_SERIES_BELOW = 1e-2
+
+
+def softened_inv_r(r2: np.ndarray, softening: float) -> np.ndarray:
+    """erf(r / eps) / r at squared distances r2: the potential of a unit charge
+    smeared as a Gaussian, density exp(-r^2 / eps^2) / (pi^1.5 eps^3).
+
+    Plain 1 / r far away (within 0.05% beyond 2.5 eps), finite 2 / (sqrt(pi) eps) at r = 0.
+    """
+    x = np.sqrt(r2) / softening
+    small = x < _SERIES_BELOW
+    x_safe = np.where(small, 1.0, x)
+    closed = special.erf(x_safe) / x_safe
+    series = 2 / np.sqrt(np.pi) * (1 - x * x / 3)
+    return np.where(small, series, closed) / softening
+
+
+def softened_inv_r3(r2: np.ndarray, softening: float) -> np.ndarray:
+    """g with field k q d g at offset d from a Gaussian-smeared unit charge: -grad of
+    softened_inv_r is d (erf(x) - 2 x exp(-x^2) / sqrt(pi)) / r^3, x = r / eps.
+
+    Plain 1 / r^3 far away, and zero field at r = 0: a charge never pushes itself.
+    """
+    x2 = r2 / softening**2
+    x = np.sqrt(x2)
+    small = x < _SERIES_BELOW
+    x_safe = np.where(small, 1.0, x)
+    closed = (special.erf(x_safe) - 2 / np.sqrt(np.pi) * x_safe * np.exp(-x_safe * x_safe)) / x_safe**3
+    series = 4 / (3 * np.sqrt(np.pi)) * (1 - 0.6 * x2)
+    return np.where(small, series, closed) / softening**3
 
 
 def coulomb_field(
@@ -19,21 +52,19 @@ def coulomb_field(
 ) -> np.ndarray:
     """Electric field at `points` (M, 2) from point charges at `sources` (N, 2).
 
-    Uses Plummer softening: E = k q r / (r^2 + eps^2)^1.5. This smears each
-    charge over a radius ~eps, avoids the 1/r^2 blow-up, and makes a charge's
-    field at its own position exactly zero (so particles never push themselves).
+    Each charge is smeared as a Gaussian of size ~eps (see softened_inv_r3): this
+    avoids the 1/r^2 blow-up, and makes a charge's field at its own position
+    exactly zero (so particles never push themselves).
     """
     field = np.zeros((len(points), 2))
     if len(points) == 0 or len(sources) == 0:
         return field
     rows_per_block = max(1, _BLOCK_SIZE // len(sources))
-    eps2 = softening**2
     for start in range(0, len(points), rows_per_block):
         block = points[start : start + rows_per_block]
         dx = block[:, 0, None] - sources[None, :, 0]
         dy = block[:, 1, None] - sources[None, :, 1]
-        r2 = dx * dx + dy * dy + eps2
-        weight = charges / (r2 * np.sqrt(r2))
+        weight = charges * softened_inv_r3(dx * dx + dy * dy, softening)
         # sum_n w (p - s_n) = p * sum_n w - w @ s, letting BLAS do the heavy part.
         total = weight.sum(axis=1)
         field[start : start + rows_per_block] = k * (block * total[:, None] - weight @ sources)
@@ -49,18 +80,19 @@ def coulomb_potential(
 ) -> np.ndarray:
     """Electric potential at `points` (M,) from softened point charges; zero far away.
 
-    V = k q / sqrt(r^2 + eps^2), the potential whose gradient is coulomb_field.
+    V = k q erf(r / eps) / r, the potential whose gradient is coulomb_field.
     """
     potential = np.zeros(len(points))
     if len(points) == 0 or len(sources) == 0:
         return potential
     rows_per_block = max(1, _BLOCK_SIZE // len(sources))
-    eps2 = softening**2
     for start in range(0, len(points), rows_per_block):
         block = points[start : start + rows_per_block]
         dx = block[:, 0, None] - sources[None, :, 0]
         dy = block[:, 1, None] - sources[None, :, 1]
-        potential[start : start + rows_per_block] = k * (charges / np.sqrt(dx * dx + dy * dy + eps2)).sum(axis=1)
+        potential[start : start + rows_per_block] = k * (
+            charges * softened_inv_r(dx * dx + dy * dy, softening)
+        ).sum(axis=1)
     return potential
 
 
@@ -75,42 +107,64 @@ def biot_savart(
     """B_z at `points` (M,) from moving charges at `sources` with q*v = `currents` (N, 2).
 
     Low-speed Biot-Savart with the same softening as Coulomb:
-    B_z = (k / c^2) * sum q (v x r)_z / (r^2 + eps^2)^1.5, with r = point - source.
+    B_z = (k / c^2) * sum q (v x r)_z g(r), with r = point - source and g as in coulomb_field.
     Screen coordinates have y pointing down, so positive B_z points INTO the screen.
     """
     bz = np.zeros(len(points))
     if len(points) == 0 or len(sources) == 0:
         return bz
     rows_per_block = max(1, _BLOCK_SIZE // len(sources))
-    eps2 = softening**2
     for start in range(0, len(points), rows_per_block):
         block = points[start : start + rows_per_block]
         dx = block[:, 0, None] - sources[None, :, 0]
         dy = block[:, 1, None] - sources[None, :, 1]
-        r2 = dx * dx + dy * dy + eps2
         cross = currents[None, :, 0] * dy - currents[None, :, 1] * dx
-        bz[start : start + rows_per_block] = (cross / (r2 * np.sqrt(r2))).sum(axis=1)
+        bz[start : start + rows_per_block] = (cross * softened_inv_r3(dx * dx + dy * dy, softening)).sum(axis=1)
     return k / c**2 * bz
 
 
 def _close_potential(r2: np.ndarray, softening: float, grid_softening: float, cutoff: float) -> np.ndarray:
     """Close-range correction potential of a unit charge at squared distances r2.
 
-    Coulomb softened by `softening` minus Coulomb softened by `grid_softening`
-    (what the grid fields already apply), times a taper (1 - r^2 / cutoff^2)^2
-    that takes it and its slope smoothly to zero at the cutoff.
+    The Ewald split: the grid fields apply erf(r / grid_softening) / r, this adds
+    the rest of erf(r / softening) / r, i.e. erfc(r / grid_softening) / r -
+    erfc(r / softening) / r (just the erfc term for point charges). It decays like a
+    Gaussian, so it is dropped beyond the cutoff.
     """
-    taper = np.maximum(1 - r2 / cutoff**2, 0.0)
-    return (1 / np.sqrt(r2 + softening**2) - 1 / np.sqrt(r2 + grid_softening**2)) * taper * taper
+    near = softened_inv_r(r2, softening) - softened_inv_r(r2, grid_softening)
+    return np.where(r2 < cutoff**2, near, 0.0)
 
 
 def _close_field(d: np.ndarray, softening: float, grid_softening: float, cutoff: float) -> np.ndarray:
     """Close-range correction field (..., 2) of a unit charge at offsets d: -grad _close_potential."""
     r2 = d[..., 0] ** 2 + d[..., 1] ** 2
-    taper = np.maximum(1 - r2 / cutoff**2, 0.0)
-    a = 1 / np.sqrt(r2 + softening**2)
-    b = 1 / np.sqrt(r2 + grid_softening**2)
-    return ((a * a * a - b * b * b) * taper * taper + 4 * (a - b) * taper / cutoff**2)[..., None] * d
+    near = softened_inv_r3(r2, softening) - softened_inv_r3(r2, grid_softening)
+    return np.where(r2 < cutoff**2, near, 0.0)[..., None] * d
+
+
+# Samples (uniform in r^2, cutoff included) of the tabulated pair kernel: erf and
+# exp per pair cost several times more than reading this back (error ~1e-5 of the peak).
+_PAIR_SAMPLES = 4096
+
+
+@lru_cache(maxsize=8)
+def _pair_table(softening: float, grid_softening: float, cutoff: float) -> np.ndarray:
+    """g with _close_field = g(r^2) d, sampled at r^2 = cutoff^2 i / _PAIR_SAMPLES.
+
+    One extra zero sample after the cutoff, so interpolating at it stays in bounds.
+    """
+    r2 = np.linspace(0, cutoff**2, _PAIR_SAMPLES + 1)
+    g = softened_inv_r3(r2, softening) - softened_inv_r3(r2, grid_softening)
+    return np.append(g, 0.0)
+
+
+def _pair_field(d: np.ndarray, softening: float, grid_softening: float, cutoff: float) -> np.ndarray:
+    """_close_field (N, 2) at offsets d (N, 2) within the cutoff, from _pair_table."""
+    table = _pair_table(softening, grid_softening, cutoff)
+    x = np.minimum((d[:, 0] ** 2 + d[:, 1] ** 2) * (_PAIR_SAMPLES / cutoff**2), _PAIR_SAMPLES)
+    i = x.astype(np.int64)
+    g = table[i] + (table[i + 1] - table[i]) * (x - i)
+    return g[:, None] * d
 
 
 def _close_range(d: np.ndarray, softening: float, grid_softening: float, cutoff: float) -> np.ndarray:
@@ -225,7 +279,7 @@ class CloseRange:
         if len(pairs) == 0:
             return force
         i, j = pairs[:, 0], pairs[:, 1]
-        field = _close_field(p.pos[i] - p.pos[j], *self._softenings())
+        field = _pair_field(p.pos[i] - p.pos[j], *self._softenings())
         pair = s.coulomb_k * (p.charge[i] * p.charge[j])[:, None] * field
         for axis in (0, 1):
             force[:, axis] += np.bincount(i, pair[:, axis], minlength=len(p))
@@ -286,14 +340,90 @@ def _lookup(tables: np.ndarray, which: np.ndarray, index: np.ndarray) -> np.ndar
     )
 
 
+# Period (cells) of the grid the assignment correction is computed on. The correction
+# is short-ranged (below 0.1% of the kernel beyond 20 cells, ~1e-4 at 60), so offsets
+# of half the period or more are dropped.
+_CORRECTION_PERIOD = 128
+# Aliases summed per axis in the optimal influence function: beyond 2 they are
+# negligible for any softening of a few tenths of a cell or more.
+_ALIASES = 2
+
+
+def _reference_spectra(qx: np.ndarray, qy: np.ndarray, softening: float) -> tuple[np.ndarray, ...]:
+    """Continuous 2D Fourier transforms of the softened field (x, y) and potential of
+    a unit charge: the potential erf(r / eps) / r transforms to 2 pi erfc(q eps / 2) / q,
+    and the field is -i q times that. Zero at q = 0 (only the potential has a pole there;
+    it cancels in the correction).
+    """
+    q = np.hypot(qx, qy)
+    zero = q == 0
+    q_safe = np.where(zero, 1.0, q)
+    potential = np.where(zero, 0.0, 2 * np.pi * special.erfc(q * softening / 2) / q_safe)
+    return -1j * qx * potential, -1j * qy * potential, potential
+
+
+@lru_cache(maxsize=8)
+def _assignment_correction(softening: float) -> tuple[np.ndarray, ...]:
+    """What the optimal influence function adds to the sampled kernels: (field x,
+    field y, potential), each (_CORRECTION_PERIOD,) * 2 indexed by offset modulo the period.
+
+    Cloud-in-cell assignment smears each charge once when depositing and once more
+    when reading back, weakening the field at short range. Hockney & Eastwood's
+    optimal influence function compensates for it, aliasing included, in the
+    least-squares sense averaged over particle positions:
+
+        K_opt(k) = sum_m U(k_m)^2 R(k_m) / (sum_m U(k_m)^2)^2,   k_m = k + 2 pi m
+
+    with U the cloud-in-cell window (a sinc^2 per axis) and R the reference
+    spectrum. The sampled kernel already has the spectrum sum_m R(k_m); the
+    difference transforms to a short-ranged real-space correction.
+    """
+    n = _CORRECTION_PERIOD
+    k = 2 * np.pi * np.fft.fftfreq(n)
+    kx, ky = np.meshgrid(k, k, indexing="ij")
+    weighted = [0.0, 0.0, 0.0]
+    sampled = [0.0, 0.0, 0.0]
+    for mx in range(-_ALIASES, _ALIASES + 1):
+        for my in range(-_ALIASES, _ALIASES + 1):
+            qx, qy = kx + 2 * np.pi * mx, ky + 2 * np.pi * my
+            window2 = (np.sinc(qx / (2 * np.pi)) * np.sinc(qy / (2 * np.pi))) ** 4
+            for i, reference in enumerate(_reference_spectra(qx, qy, softening)):
+                weighted[i] = weighted[i] + window2 * reference
+                sampled[i] = sampled[i] + reference
+    # sum_m U(k_m)^2 in closed form, per axis: 1 - 2/3 sin^2(k / 2).
+    windows = (1 - 2 / 3 * np.sin(kx / 2) ** 2) * (1 - 2 / 3 * np.sin(ky / 2) ** 2)
+    return tuple(np.fft.ifft2(w / windows**2 - r).real for w, r in zip(weighted, sampled))
+
+
+def field_kernels(
+    cols: int, rows: int, softening: float, k: float = 1.0, corrected: bool = True
+) -> tuple[np.ndarray, ...]:
+    """Real-space kernels (field x, field y, potential) at offsets -(n - 1) .. n - 1 per
+    axis (offset 0 at index n - 1): a unit charge's softened field and potential,
+    plus the assignment correction if `corrected`.
+    """
+    dx, dy = np.meshgrid(np.arange(-(cols - 1), cols), np.arange(-(rows - 1), rows), indexing="ij")
+    r2 = (dx**2 + dy**2).astype(float)
+    inv_r3 = softened_inv_r3(r2, softening)
+    kernels = [dx * inv_r3, dy * inv_r3, softened_inv_r(r2, softening)]
+    if corrected:
+        half = _CORRECTION_PERIOD // 2
+        inside = (np.abs(dx) < half) & (np.abs(dy) < half)
+        for kernel, correction in zip(kernels, _assignment_correction(softening)):
+            kernel += np.where(inside, correction[dx % _CORRECTION_PERIOD, dy % _CORRECTION_PERIOD], 0.0)
+    return tuple(k * kernel for kernel in kernels)
+
+
 class GridKernel:
     """Field and potential at every cell centre from charges on cell centres, via FFT.
 
-    Equivalent to coulomb_field / coulomb_potential over all cells, but O(n log n).
-    The kernel transforms are computed once per grid size and softening.
+    Uncorrected, equivalent to coulomb_field / coulomb_potential over all cells, but
+    O(n log n). Corrected (the default), tuned for charges deposited and read back by
+    cloud-in-cell (see _assignment_correction). The kernel transforms are computed
+    once per grid size and softening.
     """
 
-    def __init__(self, cols: int, rows: int, softening: float, k: float = 1.0):
+    def __init__(self, cols: int, rows: int, softening: float, k: float = 1.0, corrected: bool = True):
         self.cols, self.rows = cols, rows
         # Circular convolution is exact for the outputs we keep when the transform
         # is at least as long as the kernel (2n - 1): nothing wraps into them.
@@ -301,14 +431,10 @@ class GridKernel:
             fft.next_fast_len(2 * cols - 1, real=True),
             fft.next_fast_len(2 * rows - 1, real=True),
         )
-        dx, dy = np.meshgrid(
-            np.arange(-(cols - 1), cols), np.arange(-(rows - 1), rows), indexing="ij"
-        )
-        r2 = dx**2 + dy**2 + softening**2
-        inv_r3 = k / r2**1.5
-        self._kx = fft.rfft2(dx * inv_r3, s=self.shape)
-        self._ky = fft.rfft2(dy * inv_r3, s=self.shape)
-        self._kv = fft.rfft2(k / np.sqrt(r2), s=self.shape)
+        kx, ky, kv = field_kernels(cols, rows, softening, k, corrected)
+        self._kx = fft.rfft2(kx, s=self.shape)
+        self._ky = fft.rfft2(ky, s=self.shape)
+        self._kv = fft.rfft2(kv, s=self.shape)
         # Offset 0 sits at kernel index n - 1, so the centred outputs start there.
         self._keep = (slice(cols - 1, 2 * cols - 1), slice(rows - 1, 2 * rows - 1))
 
@@ -336,8 +462,8 @@ class GridKernel:
 
 
 @lru_cache(maxsize=8)
-def grid_kernel(cols: int, rows: int, softening: float, k: float = 1.0) -> GridKernel:
-    return GridKernel(cols, rows, softening, k)
+def grid_kernel(cols: int, rows: int, softening: float, k: float = 1.0, corrected: bool = True) -> GridKernel:
+    return GridKernel(cols, rows, softening, k, corrected)
 
 
 class CloudInCell:
@@ -417,10 +543,11 @@ class ElectricField:
     """Electric field of a World: ions, electrons and fixed test charges.
 
     `at` is exact (direct sums). `grid` is the fast version, used for display and
-    for forces: all charges go through FFT convolution on the grid. Ions (spread
-    over their cells, see ion_charge) and test charges sit on cell centres, so their
-    part is exact and cached until they change. Electrons are deposited onto cell centres, which blurs their field
-    within about a cell (on the scale of the softening anyway).
+    for forces: all charges go through FFT convolution on the grid. Electrons are
+    deposited onto cell centres by cloud-in-cell, and ions spread over their cells
+    (see ion_charge) are cloud-in-cell deposits too, so both use the kernel with the
+    assignment correction. Test charges sit exactly on cell centres: nothing to
+    correct, so their part is exact. Ions and test charges are cached until they change.
     """
 
     def __init__(self, settings: Settings):
@@ -430,9 +557,9 @@ class ElectricField:
         self._static_potential: np.ndarray | None = None
         self.close_range = CloseRange(settings)
 
-    def _kernel(self, world, softening: float) -> GridKernel:
+    def _kernel(self, world, softening: float, corrected: bool = True) -> GridKernel:
         m = world.materials
-        return grid_kernel(m.cols, m.rows, softening, self.settings.coulomb_k)
+        return grid_kernel(m.cols, m.rows, softening, self.settings.coulomb_k, corrected)
 
     def _update_static(self, world) -> None:
         """(Re)compute the field and potential of ions and test charges if they changed."""
@@ -442,7 +569,7 @@ class ElectricField:
         s, m = self.settings, world.materials
         ion_kernel = self._kernel(world, s.conductor_softening)
         ions = ion_charge(m, s.cell_charge)
-        fixed_kernel = self._kernel(world, s.test_charge_softening)
+        fixed_kernel = self._kernel(world, s.test_charge_softening, corrected=False)
         fixed = deposit(world.fixed_pos, world.fixed_charge, m.cols, m.rows)
         self._static_grid = ion_kernel.field(ions) + fixed_kernel.field(fixed)
         self._static_potential = ion_kernel.potential(ions) + fixed_kernel.potential(fixed)
