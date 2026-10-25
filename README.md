@@ -8,6 +8,13 @@ Embloks is written in Rust and compiled to WebAssembly; the physics runs in WebG
 shaders and is drawn with WebGPU, so it needs a browser with WebGPU (recent Chrome, Edge,
 Safari or Firefox).
 
+[Play in your browser](https://tsrapnik.github.io/embloks/)
+
+<p align="center">
+  <img src="docs/images/battery_and_resistor.png" alt="Battery and resistor circuit with electric and energy-flow fields" width="49%">
+  <img src="docs/images/antenna.png" alt="Antenna radiating electromagnetic waves" width="49%">
+</p>
+
 ## Running
 
 Requires Rust with the `wasm32-unknown-unknown` target and [Trunk](https://trunkrs.dev/) (the dev
